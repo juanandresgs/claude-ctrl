@@ -89,6 +89,21 @@ def _run_hook(
         return result.returncode, result.stdout
 
 
+def _assert_fail_closed_pretool_deny(payload: dict) -> None:
+    assert "hookSpecificOutput" in payload, f"Missing hookSpecificOutput in: {payload}"
+    hook_out = payload["hookSpecificOutput"]
+    assert hook_out.get("hookEventName") == "PreToolUse", (
+        f"Expected hookEventName=PreToolUse, got: {hook_out}"
+    )
+    assert hook_out.get("permissionDecision") == "deny", (
+        f"Expected permissionDecision=deny, got: {hook_out}"
+    )
+    assert hook_out.get("blockingHook") == "pre_write_adapter", (
+        f"Expected blockingHook=pre_write_adapter, got: {hook_out}"
+    )
+    assert hook_out.get("permissionDecisionReason"), "permissionDecisionReason must be non-empty"
+
+
 # ---------------------------------------------------------------------------
 # Fail-closed: cc_policy unavailable (python3 stub exits non-zero)
 # ---------------------------------------------------------------------------
@@ -139,16 +154,7 @@ def test_adapter_denies_when_cc_policy_crashes():
     except json.JSONDecodeError as e:
         pytest.fail(f"pre-write.sh did not emit valid JSON on failure: {e}\nstdout={stdout!r}")
 
-    # Must contain the Claude hook contract fields
-    assert "hookSpecificOutput" in payload, f"Missing hookSpecificOutput in: {payload}"
-    hook_out = payload["hookSpecificOutput"]
-    assert hook_out.get("permissionDecision") == "deny", (
-        f"Expected permissionDecision=deny, got: {hook_out}"
-    )
-    assert hook_out.get("blockingHook") == "pre_write_adapter", (
-        f"Expected blockingHook=pre_write_adapter, got: {hook_out}"
-    )
-    assert hook_out.get("permissionDecisionReason"), "permissionDecisionReason must be non-empty"
+    _assert_fail_closed_pretool_deny(payload)
 
 
 def test_adapter_denies_when_cc_policy_returns_empty():
@@ -185,8 +191,7 @@ def test_adapter_denies_when_cc_policy_returns_empty():
         f"Expected exit 0 (deny JSON on stdout) when cc_policy returns empty, got {result.returncode}. stdout={result.stdout!r}"
     )
     payload = json.loads(result.stdout.strip())
-    assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert payload["hookSpecificOutput"]["blockingHook"] == "pre_write_adapter"
+    _assert_fail_closed_pretool_deny(payload)
 
 
 def test_adapter_denies_when_cc_policy_returns_non_json():
@@ -223,8 +228,7 @@ def test_adapter_denies_when_cc_policy_returns_non_json():
         f"Expected exit 0 (deny JSON on stdout) when cc_policy returns non-JSON, got {result.returncode}. stdout={result.stdout!r}"
     )
     payload = json.loads(result.stdout.strip())
-    assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert payload["hookSpecificOutput"]["blockingHook"] == "pre_write_adapter"
+    _assert_fail_closed_pretool_deny(payload)
 
 
 def test_adapter_denies_when_cc_policy_returns_json_without_hook_output():
@@ -260,8 +264,7 @@ def test_adapter_denies_when_cc_policy_returns_json_without_hook_output():
         f"Expected exit 0 (deny JSON on stdout) for JSON without hookSpecificOutput, got {result.returncode}. stdout={result.stdout!r}"
     )
     payload = json.loads(result.stdout.strip())
-    assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert payload["hookSpecificOutput"]["blockingHook"] == "pre_write_adapter"
+    _assert_fail_closed_pretool_deny(payload)
 
 
 # ---------------------------------------------------------------------------

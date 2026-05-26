@@ -5,7 +5,7 @@ bare command, which resolves to $HOME/.claude/runtime/cli.py — that global
 CLI does NOT have the `context` subcommand.
 
 PE-W4 superseded the per-hook `_LOCAL_CLI` resolution pattern with a shared
-`_local_cc_policy()` wrapper function and a single `_LOCAL_RUNTIME_ROOT`
+`_local_cc_policy()` wrapper function and a single `_LOCAL_RUNTIME_CLI`
 variable. Lifecycle deactivation is now:
   _local_cc_policy lifecycle on-stop "$AGENT_TYPE"
 
@@ -14,13 +14,13 @@ These tests verify:
   2. The check-*.sh hook files use the W4 lifecycle authority pattern —
      `_local_cc_policy lifecycle on-stop` — not a bare `cc-policy context
      role` invocation, and not the deprecated per-hook `_LOCAL_CLI` pattern.
-  3. The full production sequence: hook resolves the local runtime root via
-     _LOCAL_RUNTIME_ROOT, calls lifecycle on-stop, marker is cleared.
+  3. The full production sequence: hook resolves local CLI via
+     _LOCAL_RUNTIME_CLI, calls lifecycle on-stop, marker is cleared.
 
 Production sequence (W4+):
   SubagentStop event -> check-{role}.sh
   -> _local_cc_policy lifecycle on-stop "$AGENT_TYPE"
-  -> cc_policy_local_runtime "$_LOCAL_RUNTIME_ROOT" lifecycle on-stop <role>
+  -> python3 "$_LOCAL_RUNTIME_CLI" lifecycle on-stop <role>
   -> marker deactivated via Python lifecycle authority (DEC-LIFECYCLE-003)
 
 @decision DEC-PE-W5-BRIDGE-001
@@ -132,13 +132,7 @@ class TestContextRoleCommand:
         )
 
     def test_context_role_with_guardian_marker(self, db, project_dir):
-        """context role resolves 'guardian' marker correctly.
-
-        DEC-WHO-GUARDIAN-CANONICALIZE-001: live dispatch writes bare "guardian"
-        to agent_markers; build_context() canonicalizes to the compound stage
-        using dispatch_phase. With no completion records seeded here, the
-        safe-default path routes to guardian:provision (no landing auth).
-        """
+        """context role resolves 'guardian' marker correctly."""
         run_cli_json(
             ["marker", "set", "agent-gd-001", "guardian", "--project-root", project_dir], db
         )
@@ -146,29 +140,16 @@ class TestContextRoleCommand:
             ["context", "role"], db, extra_env={"CLAUDE_PROJECT_DIR": project_dir}
         )
         assert code == 0
-        assert out.get("role") == "guardian:provision"
+        assert out.get("role") == "guardian"
 
-    def test_context_role_tester_marker_is_deactivated_by_schema_cleanup(
-        self, db, project_dir
-    ):
-        """Phase 8 Slice 11: tester is no longer a dispatch-significant role.
-
-        ``ensure_schema()`` (DEC-CONV-002) deactivates any active marker whose
-        role is not in the retained set ({planner, implementer, reviewer,
-        guardian}). A marker set with ``role=tester`` is immediately
-        deactivated on the next CLI invocation, so ``context role`` returns
-        an empty role — confirming tester is no longer honoured as an actor
-        identity anywhere in the runtime.
-        """
+    def test_context_role_with_tester_marker(self, db, project_dir):
+        """context role resolves 'tester' marker correctly."""
         run_cli_json(["marker", "set", "agent-ts-001", "tester", "--project-root", project_dir], db)
         code, out = run_cli_json(
             ["context", "role"], db, extra_env={"CLAUDE_PROJECT_DIR": project_dir}
         )
         assert code == 0
-        assert out.get("role") == "", (
-            "tester marker must be deactivated by ensure_schema cleanup — "
-            f"got role={out.get('role')!r}"
-        )
+        assert out.get("role") == "tester"
 
     def test_context_role_with_planner_marker(self, db, project_dir):
         """context role resolves 'planner' marker correctly."""
@@ -203,87 +184,6 @@ class TestContextRoleCommand:
 
 
 # ---------------------------------------------------------------------------
-# 1b. Local CLI: context capability-contract returns correct projection
-# ---------------------------------------------------------------------------
-
-
-class TestContextCapabilityContract:
-    """Verify that ``cc-policy context capability-contract --stage <stage>``
-    returns a correct JSON projection from authority_registry.resolve_contract()."""
-
-    def test_planner_contract_grants_governance_and_config(self, db):
-        code, out = run_cli_json(
-            ["context", "capability-contract", "--stage", "planner"], db
-        )
-        assert code == 0, f"unexpected failure: {out}"
-        data = out["data"]
-        assert data["stage"] == "planner"
-        assert "can_write_governance" in data["granted"]
-        assert "can_set_control_config" in data["granted"]
-        assert data["read_only"] is False
-
-    def test_reviewer_contract_is_read_only_and_denies_write_source_and_land(self, db):
-        code, out = run_cli_json(
-            ["context", "capability-contract", "--stage", "reviewer"], db
-        )
-        assert code == 0, f"unexpected failure: {out}"
-        data = out["data"]
-        assert data["stage"] == "reviewer"
-        assert data["read_only"] is True
-        assert "can_write_source" in data["denied"]
-        assert "can_land_git" in data["denied"]
-
-    def test_implementer_contract_grants_write_source(self, db):
-        code, out = run_cli_json(
-            ["context", "capability-contract", "--stage", "implementer"], db
-        )
-        assert code == 0
-        data = out["data"]
-        assert data["stage"] == "implementer"
-        assert "can_write_source" in data["granted"]
-
-    def test_guardian_land_contract_grants_land_git(self, db):
-        code, out = run_cli_json(
-            ["context", "capability-contract", "--stage", "guardian:land"], db
-        )
-        assert code == 0
-        data = out["data"]
-        assert data["stage"] == "guardian:land"
-        assert "can_land_git" in data["granted"]
-
-    def test_plan_alias_canonicalizes_to_planner(self, db):
-        code, out = run_cli_json(
-            ["context", "capability-contract", "--stage", "Plan"], db
-        )
-        assert code == 0, f"unexpected failure: {out}"
-        data = out["data"]
-        assert data["stage"] == "planner"
-
-    def test_unknown_stage_exits_nonzero(self, db):
-        code, out = run_cli_json(
-            ["context", "capability-contract", "--stage", "ghost_stage"], db
-        )
-        assert code != 0
-
-    def test_sink_stage_exits_nonzero(self, db):
-        code, out = run_cli_json(
-            ["context", "capability-contract", "--stage", "terminal"], db
-        )
-        assert code != 0
-
-    def test_output_has_stable_data_keys(self, db):
-        code, out = run_cli_json(
-            ["context", "capability-contract", "--stage", "planner"], db
-        )
-        assert code == 0
-        data = out["data"]
-        assert set(data.keys()) == {"stage", "granted", "denied", "read_only"}
-        # granted and denied must be sorted lists
-        assert data["granted"] == sorted(data["granted"])
-        assert data["denied"] == sorted(data["denied"])
-
-
-# ---------------------------------------------------------------------------
 # 2. Hook source code: check-*.sh must use local CLI path
 # ---------------------------------------------------------------------------
 
@@ -292,8 +192,8 @@ class TestHookLocalCLIPattern:
     """Verify that check-*.sh hooks use the W4 lifecycle authority pattern.
 
     The correct pattern (W4+, DEC-LIFECYCLE-003):
-      _LOCAL_RUNTIME_ROOT="$_HOOK_DIR/../runtime"
-      _local_cc_policy() { ... cc_policy_local_runtime "$_LOCAL_RUNTIME_ROOT" "$@" ... }
+      _LOCAL_RUNTIME_CLI="$_HOOK_DIR/../runtime/cli.py"
+      _local_cc_policy() { ... python3 "$_LOCAL_RUNTIME_CLI" "$@" ... }
       _local_cc_policy lifecycle on-stop "$AGENT_TYPE"
 
     Forbidden patterns:
@@ -304,6 +204,7 @@ class TestHookLocalCLIPattern:
     CHECK_HOOKS = [
         "check-implementer.sh",
         "check-guardian.sh",
+        "check-tester.sh",
         "check-planner.sh",
     ]
 
@@ -335,34 +236,35 @@ class TestHookLocalCLIPattern:
         )
 
     @pytest.mark.parametrize("hook_name", CHECK_HOOKS)
-    def test_hook_uses_local_runtime_root_resolution(self, hook_name):
-        """Hook must resolve the worktree runtime root via _LOCAL_RUNTIME_ROOT.
+    def test_hook_uses_local_cli_resolution(self, hook_name):
+        """Hook must resolve runtime/cli.py locally via _LOCAL_RUNTIME_CLI.
 
-        Hooks now delegate through cc_policy_local_runtime(), which centralizes
-        runtime CLI selection and Python interpreter selection in
-        hooks/lib/runtime-bridge.sh.
+        W4 replaced the per-hook _LOCAL_CLI pattern with a shared _local_cc_policy()
+        wrapper backed by _LOCAL_RUNTIME_CLI. Both the variable and the path must
+        be present so that no global cc-policy binary is required.
         """
         hook_path = _HOOKS_DIR / hook_name
         assert hook_path.exists(), f"Hook file not found: {hook_path}"
 
         content = hook_path.read_text(encoding="utf-8")
 
-        assert "_LOCAL_RUNTIME_ROOT" in content, (
-            f"{hook_name} missing _LOCAL_RUNTIME_ROOT local path resolution. "
-            'Expected: _LOCAL_RUNTIME_ROOT="$_HOOK_DIR/../runtime"'
+        # Must use the W4 local runtime CLI variable (not the old _LOCAL_CLI)
+        assert "_LOCAL_RUNTIME_CLI" in content, (
+            f"{hook_name} missing _LOCAL_RUNTIME_CLI local path resolution. "
+            'Expected: _LOCAL_RUNTIME_CLI="$_HOOK_DIR/../runtime/cli.py"'
         )
-        assert 'cc_policy_local_runtime "$_LOCAL_RUNTIME_ROOT"' in content, (
-            f"{hook_name} missing cc_policy_local_runtime wrapper."
+        assert "runtime/cli.py" in content, (
+            f"{hook_name} missing runtime/cli.py path in local resolution."
         )
 
     @pytest.mark.parametrize("hook_name", CHECK_HOOKS)
-    def test_hook_invokes_bridge_local_runtime_wrapper(self, hook_name):
-        """Hook must delegate lifecycle deactivation to the bridge wrapper.
+    def test_hook_invokes_python3_with_local_cli(self, hook_name):
+        """Hook must delegate lifecycle deactivation to _local_cc_policy, not direct python3.
 
         W4 (DEC-LIFECYCLE-003): lifecycle on-stop is the single authority.
         The hook calls `_local_cc_policy lifecycle on-stop` which internally
-        invokes `cc_policy_local_runtime "$_LOCAL_RUNTIME_ROOT"`. No direct
-        hook-local `python3 runtime/cli.py` call is needed.
+        invokes `python3 "$_LOCAL_RUNTIME_CLI"`. No direct python3 call needed
+        at the hook level.
         """
         hook_path = _HOOKS_DIR / hook_name
         assert hook_path.exists()
@@ -373,93 +275,10 @@ class TestHookLocalCLIPattern:
             f"{hook_name} missing: _local_cc_policy lifecycle on-stop (DEC-LIFECYCLE-003). "
             "Hook must delegate marker deactivation to the Python lifecycle authority."
         )
-        assert 'cc_policy_local_runtime "$_LOCAL_RUNTIME_ROOT"' in content, (
-            f'{hook_name} missing: cc_policy_local_runtime "$_LOCAL_RUNTIME_ROOT" inside _local_cc_policy wrapper.'
+        # The wrapper itself must invoke python3 with local CLI
+        assert 'python3 "$_LOCAL_RUNTIME_CLI"' in content, (
+            f'{hook_name} missing: python3 "$_LOCAL_RUNTIME_CLI" inside _local_cc_policy wrapper.'
         )
-
-
-# ---------------------------------------------------------------------------
-# 2b. check-planner.sh structural assertions (Phase 6 slice 3)
-# ---------------------------------------------------------------------------
-
-
-class TestCheckPlannerHookStructure:
-    """Structural assertions on hooks/check-planner.sh.
-
-    Proves the hook parses PLAN_VERDICT/PLAN_SUMMARY trailers and submits
-    completion with role planner via the local runtime wrapper. These are
-    source-level checks, not execution tests — the hook is advisory (exit 0)
-    so we verify intent via string matching rather than full subprocess
-    invocation.
-    """
-
-    @staticmethod
-    def _hook_content() -> str:
-        hook_path = _HOOKS_DIR / "check-planner.sh"
-        assert hook_path.exists(), "hooks/check-planner.sh not found"
-        return hook_path.read_text(encoding="utf-8")
-
-    def test_check_planner_wired_in_settings(self):
-        """check-planner.sh must be wired for SubagentStop planner|Plan."""
-        import json
-        settings_path = _HOOKS_DIR.parent / "settings.json"
-        settings = json.loads(settings_path.read_text(encoding="utf-8"))
-        hooks = settings.get("hooks", {})
-        subagent_stop = hooks.get("SubagentStop", [])
-        # settings.json uses {matcher, hooks: [...]} groups
-        found = False
-        for group in subagent_stop:
-            if not isinstance(group, dict):
-                continue
-            matcher = group.get("matcher", "")
-            inner_hooks = group.get("hooks", [])
-            if "planner" in matcher.lower():
-                for h in inner_hooks:
-                    if isinstance(h, dict) and "check-planner.sh" in h.get("command", ""):
-                        found = True
-                        break
-        assert found, "check-planner.sh not wired for SubagentStop planner matcher"
-
-    def test_parses_plan_verdict(self):
-        content = self._hook_content()
-        assert "PLAN_VERDICT" in content, "check-planner.sh must parse PLAN_VERDICT"
-        assert "grep" in content and "PLAN_VERDICT" in content
-
-    def test_parses_plan_summary(self):
-        content = self._hook_content()
-        assert "PLAN_SUMMARY" in content, "check-planner.sh must parse PLAN_SUMMARY"
-
-    def test_calls_completion_submit_planner(self):
-        content = self._hook_content()
-        assert "_local_cc_policy completion submit" in content, (
-            "check-planner.sh must call _local_cc_policy completion submit"
-        )
-        assert '"planner"' in content, (
-            "check-planner.sh must pass role 'planner' to completion submit"
-        )
-
-    def test_advisory_exit_zero(self):
-        """Hook must always exit 0 (advisory)."""
-        content = self._hook_content()
-        lines = content.strip().splitlines()
-        last_line = lines[-1].strip()
-        assert last_line == "exit 0", (
-            f"check-planner.sh must end with 'exit 0', got: {last_line!r}"
-        )
-
-    def test_no_exit_nonzero(self):
-        """Hook must not have any non-zero exit calls."""
-        content = self._hook_content()
-        executable_lines = [
-            line.strip()
-            for line in content.splitlines()
-            if line.strip() and not line.strip().startswith("#")
-        ]
-        for line in executable_lines:
-            if line.startswith("exit ") and line != "exit 0":
-                raise AssertionError(
-                    f"check-planner.sh has non-zero exit: {line!r}"
-                )
 
 
 # ---------------------------------------------------------------------------
@@ -507,12 +326,7 @@ class TestContextRoleProductionSequence:
         assert active_out.get("found") is False, "Marker should be inactive after deactivation"
 
     def test_full_subagent_stop_sequence_guardian(self, db, project_dir):
-        """Simulates check-guardian.sh marker deactivation via context role.
-
-        DEC-WHO-GUARDIAN-CANONICALIZE-001: live bare "guardian" marker
-        canonicalizes to guardian:provision (safe default) when no dispatch
-        phase is present.
-        """
+        """Simulates check-guardian.sh marker deactivation via context role."""
         _env = {"CLAUDE_PROJECT_DIR": project_dir}
         run_cli_json(
             ["marker", "set", "gd-agent-07", "guardian", "--project-root", project_dir], db
@@ -520,7 +334,7 @@ class TestContextRoleProductionSequence:
 
         code, ctx_out = run_cli_json(["context", "role"], db, extra_env=_env)
         assert code == 0
-        assert ctx_out.get("role") == "guardian:provision"
+        assert ctx_out.get("role") == "guardian"
         agent_id = ctx_out.get("agent_id")
         assert agent_id == "gd-agent-07"
 

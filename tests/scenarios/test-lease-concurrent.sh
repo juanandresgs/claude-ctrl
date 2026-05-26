@@ -47,9 +47,7 @@ ISSUE_A=$($CC lease issue-for-dispatch "implementer" \
 LEASE_A=$(printf '%s' "$ISSUE_A" | jq -r '.lease.lease_id // empty' 2>/dev/null || true)
 if [[ -n "$LEASE_A" ]]; then pass "worktree-A: lease issued"; else fail "worktree-A: lease issued"; fi
 
-# Phase 8 Slice 11: worktree-B uses reviewer (live read-only role); ``tester`` was
-# retired. The concurrent-isolation invariant is role-agnostic.
-ISSUE_B=$($CC lease issue-for-dispatch "reviewer" \
+ISSUE_B=$($CC lease issue-for-dispatch "tester" \
     --worktree-path "$WT_B" \
     --workflow-id "wf-b" \
     --allowed-ops '["routine_local"]' 2>/dev/null)
@@ -68,7 +66,7 @@ B_ROLE=$(printf '%s' "$CURR_B" | jq -r '.role // empty' 2>/dev/null || true)
 if [[ "$A_FOUND" == "yes" ]]; then pass "worktree-A: active lease found"; else fail "worktree-A: active lease found"; fi
 if [[ "$B_FOUND" == "yes" ]]; then pass "worktree-B: active lease found"; else fail "worktree-B: active lease found"; fi
 if [[ "$A_ROLE" == "implementer" ]]; then pass "worktree-A: role=implementer"; else fail "worktree-A: role=implementer (got $A_ROLE)"; fi
-if [[ "$B_ROLE" == "reviewer" ]]; then pass "worktree-B: role=reviewer"; else fail "worktree-B: role=reviewer (got $B_ROLE)"; fi
+if [[ "$B_ROLE" == "tester" ]]; then pass "worktree-B: role=tester"; else fail "worktree-B: role=tester (got $B_ROLE)"; fi
 
 # --- Lease IDs are distinct ---
 if [[ "$LEASE_A" != "$LEASE_B" ]]; then pass "lease IDs are distinct"; else fail "lease IDs are distinct"; fi
@@ -105,15 +103,13 @@ if [[ "$B_ID_FINAL" == "$LEASE_B" ]]; then pass "worktree-B: lease id unchanged 
 VOP_A_PUSH=$($CC lease validate-op "git push origin feature/test" \
     --worktree-path "$WT_A" 2>/dev/null || echo '{}')
 VOP_A_CLASS=$(printf '%s' "$VOP_A_PUSH" | jq -r '.op_class // empty' 2>/dev/null || true)
-VOP_A_ALLOWED=$(printf '%s' "$VOP_A_PUSH" | jq -r 'if .allowed == true then "true" else "false" end' 2>/dev/null || echo "false")
 VOP_A_REQ_APPROVAL=$(printf '%s' "$VOP_A_PUSH" | jq -r '.requires_approval // false' 2>/dev/null || echo "false")
 if [[ "$VOP_A_CLASS" == "high_risk" ]]; then pass "worktree-A new lease: push classified as high_risk"; else fail "worktree-A new lease: push classified as high_risk (got $VOP_A_CLASS)"; fi
-if [[ "$VOP_A_ALLOWED" == "true" ]]; then pass "worktree-A new lease: push allowed under guardian landing"; else fail "worktree-A new lease: push allowed under guardian landing (got $VOP_A_ALLOWED)"; fi
-if [[ "$VOP_A_REQ_APPROVAL" == "false" ]]; then pass "worktree-A new lease: push requires_approval=false"; else fail "worktree-A new lease: push requires_approval=false (got $VOP_A_REQ_APPROVAL)"; fi
+if [[ "$VOP_A_REQ_APPROVAL" == "true" ]]; then pass "worktree-A new lease: push requires_approval=true"; else fail "worktree-A new lease: push requires_approval=true (got $VOP_A_REQ_APPROVAL)"; fi
 
-# --- validate_op on B uses its own lease (reviewer only has routine_local) ---
+# --- validate_op on B uses its own lease (tester only has routine_local) ---
 # Default to "true" (worst case) so a CLI failure does not hide a real denial.
-# The correct result is "false" — high_risk not in reviewer's allowed_ops.
+# The correct result is "false" — high_risk not in tester's allowed_ops.
 VOP_B_PUSH=$($CC lease validate-op "git push origin feature/test" \
     --worktree-path "$WT_B" 2>/dev/null || echo '{"allowed":true}')
 VOP_B_ALLOWED=$(printf '%s' "$VOP_B_PUSH" | jq -r 'if .allowed == false then "false" else "true" end' 2>/dev/null || echo "true")

@@ -5,22 +5,22 @@
 #
 # Sub-cases:
 #   A: Routine commit with ready_for_guardian -> allowed (Check 10, no approval token needed)
-#   B: straightforward git push WITHOUT approval token -> allowed
-#   C: straightforward git push does NOT consume unrelated approval tokens
+#   B: git push WITHOUT approval token -> denied by Check 13
+#   C: git push WITH approval token -> allowed (token consumed)
 #   D: git rebase WITHOUT approval token -> denied by Check 13
 #   E: Classifier correctness (commit->routine_local, push->high_risk, etc.)
 #   F: Destructive ops hard-denied by Checks 5-6 (reset --hard, push --force)
 #
 # @decision DEC-GUARD-013
-# @title E2E proof: Guardian push auto-land, approval-gated recovery ops, and classifier in guard.sh
+# @title E2E proof: approval token gate and classifier in guard.sh
 # @status accepted
 # @rationale This test is the compound-interaction proof required by the
 #   Evaluation Contract. It exercises the real production sequence across
 #   schemas.py (APPROVALS_DDL), runtime/core/approvals.py (grant/consume),
-#   runtime/cli.py (cc-policy approval grant/check/list), hooks/context-lib.sh
-#   (classify_git_op), and pre-bash policy evaluation. Sub-case F confirms the
-#   destructive-op denies still fire before any approval-token path, so no token
-#   can override destructive-op denial.
+#   runtime/cli.py (cc-policy approval grant/check/list), hooks/lib/runtime-bridge.sh
+#   (rt_approval_check), hooks/context-lib.sh (classify_git_op), and
+#   hooks/guard.sh (Check 13). Sub-case F confirms Checks 5-6 still fire
+#   before Check 13, so no approval token can override destructive-op denial.
 set -euo pipefail
 
 TEST_NAME="test-guardian-auto-land-e2e"
@@ -57,46 +57,25 @@ _setup_passing_repo() {
 
     # Schema + guardian role
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
-    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-        marker set "agent-test" "guardian" --project-root "$TMP_DIR" >/dev/null 2>&1
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" --project-root "$TMP_DIR" >/dev/null 2>&1
 
-    # Test status
-    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-        test-state set pass --project-root "$TMP_DIR" --passed 1 --total 1 >/dev/null 2>&1
+    # Workflow binding + scope + test/reviewer evidence
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" workflow bind "$WF_ID" "$TMP_DIR" "$branch" >/dev/null 2>&1
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" workflow scope-set "$WF_ID" --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" test-state set pass --project-root "$TMP_DIR" --head-sha "$CURRENT_HEAD" --passed 1 --total 1 >/dev/null 2>&1
+    local reviewer_json reviewer_run payload result guardian_run lease_meta
+    reviewer_json=$(CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" stage run-create --workflow-id "$WF_ID" --stage-id reviewer --worktree-path "$TMP_DIR")
+    reviewer_run=$(printf '%s' "$reviewer_json" | jq -r '.stage_run.id')
+    payload=$(jq -nc --arg run "$reviewer_run" --arg sha "$CURRENT_HEAD" '{stage_run_id:$run,stage_id:"reviewer",verdict:"ready_for_guardian",summary:"reviewed",head_sha:$sha,findings:[]}')
+    result=$(CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" stage result-submit "$reviewer_run" --payload "$payload")
+    guardian_run=$(printf '%s' "$result" | jq -r '.next_stage_run.id')
+    lease_meta=$(jq -nc --arg run "$guardian_run" '{stage_run_id:$run}')
 
-    # Evaluation state
-    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-        evaluation set "$WF_ID" "ready_for_guardian" --head-sha "$CURRENT_HEAD" >/dev/null 2>&1
-
-    # Workflow binding + scope
-    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-        workflow bind "$WF_ID" "$TMP_DIR" "$branch" >/dev/null 2>&1
-    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-        workflow scope-set "$WF_ID" --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1
-    python3 - "$TEST_DB" "$WF_ID" <<'PY' >/dev/null 2>&1
-import sqlite3
-import sys
-
-conn = sqlite3.connect(sys.argv[1])
-try:
-    conn.execute(
-        "INSERT INTO completion_records "
-        "(lease_id, workflow_id, role, verdict, valid, payload_json, missing_fields, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, CAST(strftime('%s','now') AS INTEGER))",
-        ("seed-lease", sys.argv[2], "reviewer", "ready_for_guardian", 1, "{}", "[]"),
-    )
-    conn.commit()
-finally:
-    conn.close()
-PY
-
-    # Dispatch lease: push remains high_risk for lease/capability matching even
-    # though it is no longer approval-token gated. Rebase still relies on the
-    # approval gate, so the lease must allow both routine_local and high_risk.
-    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-        lease issue-for-dispatch "guardian" --workflow-id "$WF_ID" \
-        --worktree-path "$TMP_DIR" --branch "$branch" \
-        --allowed-ops '["routine_local","high_risk"]' >/dev/null 2>&1
+    # Dispatch lease with guardian:land metadata so v6_landing_readiness is the exact authority.
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" lease issue-for-dispatch "guardian" \
+        --workflow-id "$WF_ID" --worktree-path "$TMP_DIR" --branch "$branch" \
+        --allowed-ops '["routine_local","high_risk"]' --metadata "$lease_meta" >/dev/null 2>&1
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" stage landing-ready "$guardian_run" >/dev/null 2>&1
 }
 
 _teardown() {
@@ -150,9 +129,9 @@ run_sub_case_a() {
     fi
 }
 
-# ─── Sub-case B: git push WITHOUT approval token → allowed ────────────────────
-# Production sequence: all gates pass, push is part of Guardian landing, and
-# no approval token should be consulted.
+# ─── Sub-case B: git push WITHOUT approval token → denied by Check 13 ─────────
+# Production sequence: all gates pass, but op is high_risk (push) and no
+# approval token exists. Check 13 must deny with a message mentioning "approval".
 run_sub_case_b() {
     local branch="feature/e2e-push-no-token"
     _setup_passing_repo "$branch"
@@ -164,25 +143,30 @@ run_sub_case_b() {
     local decision
     decision=$(_decision "$output")
 
-    if [[ -z "$output" || "$decision" != "deny" ]]; then
-        pass "B" "straightforward push without approval token allowed"
+    if [[ "$decision" == "deny" ]]; then
+        local reason
+        reason=$(_reason "$output")
+        if printf '%s' "$reason" | grep -qi "approval"; then
+            pass "B" "push without token denied with approval message"
+        else
+            fail "B" "push denied but reason missing 'approval': $reason"
+        fi
     else
-        fail "B" "push without approval token was denied: $(_reason "$output")"
+        fail "B" "push without approval token was NOT denied (decision=$decision)"
     fi
 }
 
-# ─── Sub-case C: git push leaves unrelated approval token untouched ───────────
-# Production sequence: grant a rebase approval token, run a straightforward
-# push, verify the push is allowed, then verify the unrelated token was NOT
-# consumed (push no longer consults approval tokens).
+# ─── Sub-case C: git push WITH approval token → allowed (token consumed) ──────
+# Production sequence: grant approval token via cc-policy, run guard.sh, verify
+# it passes, then verify the token was consumed (list shows empty).
 run_sub_case_c() {
     local branch="feature/e2e-push-with-token"
     _setup_passing_repo "$branch"
     trap '_teardown' RETURN
 
-    # Grant an unrelated approval token
+    # Grant the approval token
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-        approval grant "$WF_ID" "rebase" >/dev/null 2>&1
+        approval grant "$WF_ID" "push" >/dev/null 2>&1
 
     # Verify it's pending before guard runs
     local pending_before
@@ -200,17 +184,17 @@ run_sub_case_c() {
     decision=$(_decision "$output")
 
     if [[ -z "$output" || "$decision" != "deny" ]]; then
-        # Verify token was NOT consumed
+        # Verify token was consumed
         local pending_after
         pending_after=$(CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-            approval list --workflow-id "$WF_ID" 2>/dev/null | jq -r '.count' 2>/dev/null || echo "0")
-        if [[ "$pending_after" == "1" ]]; then
-            pass "C" "push allowed and unrelated approval token left untouched"
+            approval list --workflow-id "$WF_ID" 2>/dev/null | jq -r '.count' 2>/dev/null || echo "1")
+        if [[ "$pending_after" == "0" ]]; then
+            pass "C" "push with approval token allowed and token consumed"
         else
-            fail "C" "push allowed but unrelated approval token changed (pending_after=$pending_after)"
+            fail "C" "push allowed but token was NOT consumed (pending_after=$pending_after)"
         fi
     else
-        fail "C" "push with unrelated approval token was denied: $(_reason "$output")"
+        fail "C" "push with valid approval token was denied: $(_reason "$output")"
     fi
 }
 
@@ -289,11 +273,11 @@ run_sub_case_e() {
 }
 
 # ─── Sub-case F: Destructive ops hard-denied by Checks 5-6 ────────────────────
-# Even with a guardian role + all passing gates + matching approval tokens, these ops
+# Even with a guardian role + all passing gates + an approval token, these ops
 # must be denied by Checks 5-6 (which fire before Check 13).
 _run_destructive_deny_check() {
     local subcaseid="$1"
-    local git_args="$2"
+    local subcmd="$2"
     local pattern="$3"
     local subname="feature/e2e-destructive-${subcaseid}"
 
@@ -301,12 +285,11 @@ _run_destructive_deny_check() {
 
     # Grant approval tokens — must NOT override the hard deny from Checks 5-6
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-        approval grant "$WF_ID" "destructive_cleanup" >/dev/null 2>&1
+        approval grant "$WF_ID" "push" >/dev/null 2>&1
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
         approval grant "$WF_ID" "reset" >/dev/null 2>&1
 
-    local out dec reason subcmd
-    subcmd="git -C \"$TMP_DIR\" $git_args"
+    local out dec reason
     out=$(_run_guard "$subcmd")
     dec=$(_decision "$out")
 
@@ -325,15 +308,16 @@ _run_destructive_deny_check() {
 }
 
 run_sub_case_f() {
-    _run_destructive_deny_check "reset-hard"  "reset --hard HEAD~1"              "destructive"
-    _run_destructive_deny_check "clean-f"     "clean -f"                         "permanently deletes"
-    _run_destructive_deny_check "branch-D"    "branch -D some-branch"            "force-deletes"
-    # push-force must also use the real TMP_DIR so Check 3 finds the lease and
-    # passes through to Check 5's force-push safety check.
+    _run_destructive_deny_check "reset-hard"  "git -C /tmp reset --hard HEAD~1"             "lease\|destructive"
+    _run_destructive_deny_check "clean-f"     "git -C /tmp clean -f"                         "lease\|permanently deletes"
+    _run_destructive_deny_check "branch-D"    "git -C /tmp branch -D some-branch"            "lease\|force-deletes"
+    # push-force: must use the real TMP_DIR (not /tmp) so Check 3 finds the
+    # lease from _setup_passing_repo and passes through to Check 5's force
+    # push safety check. Without a lease Check 3 denies high_risk first.
     local pf_branch="feature/e2e-destructive-push-force"
     _setup_passing_repo "$pf_branch"
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-        approval grant "$WF_ID" "force_push" >/dev/null 2>&1
+        approval grant "$WF_ID" "push" >/dev/null 2>&1
     local pf_cmd="git -C \"$TMP_DIR\" push origin $pf_branch --force"
     local pf_out pf_dec pf_reason
     pf_out=$(_run_guard "$pf_cmd")

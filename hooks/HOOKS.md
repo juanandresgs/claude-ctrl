@@ -1,103 +1,68 @@
-# ClauDEX Hook Adapter Manifest
+# Hooks — v6 Runtime Dispatch Snapshot
 
-This document is a derived projection of `runtime.core.hook_manifest.HOOK_MANIFEST` (CUTOVER_PLAN §Authority Map: `hook_wiring`).
-Do not hand-edit — regenerate from the runtime manifest via the projection builder in `runtime.core.hook_doc_projection`.
+Status: v6 current
+Date: 2026-05-18
 
-Generator version: `1.0.0`
+## v6 hot path
 
-## SessionStart
+```text
+UserPromptSubmit → prompt-submit.sh bootstraps/reuses v6 stage context
+PreToolUse:Agent → pre-agent.sh records canonical launch intent
+SubagentStart → subagent-start.sh binds/repairs runtime stage context
+SubagentStop → v6-result-submit.sh submits claude_ctrl_result and emits next V6_DISPATCH_READY
+PreToolUse:Bash/Write/Edit → policy engine gates tool use
+```
 
-- matcher `startup|resume|clear|compact` → `hooks/session-init.sh`
-  - _Session bootstrap + context injection (CUTOVER_PLAN H3)._
+## Canonical dispatch hooks
 
-## UserPromptSubmit
+| Hook | Event | v6 behavior |
+|---|---|---|
+| `prompt-submit.sh` | UserPromptSubmit | For actionable implementation prompts, calls `cc-policy stage bootstrap` and injects natural `V6_DISPATCH_READY` launch context. |
+| `pre-agent.sh` | PreToolUse Agent/Task | Denies only harness worktree isolation; canonical `planner|implementer|critic|reviewer|guardian` launches are recorded as best-effort runtime claims and are not blocked for missing prompt ceremony. |
+| `subagent-start.sh` | SubagentStart | Resolves context by launch id, child metadata, agent id, pending stage, or natural role/workflow fallback. It creates/repairs role markers and recomputes `v6_landing_readiness` when seating `guardian:land`. |
+| `v6-result-submit.sh` | SubagentStop | Parses final `claude_ctrl_result`, submits to runtime, prepares the next internal launch binding, and emits `V6_DISPATCH_READY: launch <role> for stage <stage>`. For implementer results, invokes the bounded critic worker automatically. |
+| `post-task.sh` | SubagentStop | Legacy adapter retained for non-v6/migration paths; not wired as the active v6 routing authority. |
 
-- matcher `(unconditional)` → `hooks/prompt-submit.sh`
-  - _Prompt preprocessing and context injection (CUTOVER_PLAN H3)._
+## Result contract
 
-## WorktreeCreate
+Every canonical subagent final message ends with:
 
-- matcher `(unconditional)` → `hooks/block-worktree-create.sh`
-  - _Fail-closed worktree safety adapter (DEC-GUARD-WT-009, DEC-PHASE0-001). Denies harness-managed worktree creation so Guardian remains the sole worktree authority._
+````text
+```claude_ctrl_result
+{
+  "stage_run_id": "<runtime id>",
+  "stage_id": "<stage id>",
+  "verdict": "<allowed verdict>",
+  "summary": "one-line evidence summary"
+}
+```
+````
 
-## PreToolUse
+Stage-specific additions are injected by runtime context (`head_sha`, `findings`, `execution_proof`, etc.).
 
-- matcher `Write|Edit` → `hooks/test-gate.sh`
-  - _Pre-write test gate (part of the PostToolUse write pipeline — CUTOVER_PLAN P7)._
-- matcher `Write|Edit` → `hooks/mock-gate.sh`
-  - _Pre-write mock detector (CUTOVER_PLAN P7)._
-- matcher `Write|Edit` → `hooks/pre-write.sh`
-  - _Thin pre-write adapter — source WHO + workflow scope enforcement (CUTOVER_PLAN H1)._
-- matcher `Write|Edit` → `hooks/doc-gate.sh`
-  - _Docs-vs-code consistency gate (CUTOVER_PLAN P7)._
-- matcher `Bash` → `hooks/pre-bash.sh`
-  - _Thin pre-bash adapter — command-intent + git WHO enforcement (CUTOVER_PLAN H1)._
-- matcher `Task` → `hooks/pre-agent.sh`
-  - _Pre-agent guard for subagent isolation bypass (CUTOVER_PLAN H2)._
-- matcher `Agent` → `hooks/pre-agent.sh`
-  - _Pre-agent guard (Agent tool alias of Task) — CUTOVER_PLAN H2._
+## Landing authority
 
-## PostToolUse
+Guardian source landing is gated by `v6_landing_readiness`, not legacy `evaluation_state`. That aggregate ties together:
 
-- matcher `Write|Edit` → `hooks/lint.sh`
-  - _Post-write lint pipeline (CUTOVER_PLAN H4)._
-- matcher `Write|Edit` → `hooks/track.sh`
-  - _Post-write source-change tracking + readiness invalidation (CUTOVER_PLAN H4)._
-- matcher `Write|Edit` → `hooks/code-review.sh`
-  - _Advisory post-write code review (CUTOVER_PLAN H4, Partial)._
-- matcher `Write|Edit` → `hooks/plan-validate.sh`
-  - _Plan-scope validation on source writes (CUTOVER_PLAN H4)._
-- matcher `Write|Edit` → `hooks/test-runner.sh`
-  - _Post-write test runner (CUTOVER_PLAN H4 / P7)._
-- matcher `Bash` → `hooks/post-bash.sh`
-  - _Post-bash source-mutation readiness invalidation (Invariant #15, DEC-EVAL-006)._
+- reviewer result and `head_sha`
+- passing `test_state`
+- workflow binding
+- workflow scope
+- active Guardian lease
+- guardian:land stage run
 
-## Notification
+Source changes invalidate both legacy readiness and v6 landing readiness via `track.sh`. Guarded docs/config commits may bypass reviewer readiness only when the shared non-source fast-path classifier accepts the staged files.
 
-- matcher `permission_prompt|idle_prompt` → `hooks/notify.sh`
-  - _User-facing notifications for permission and idle prompts (CUTOVER_PLAN O5 Later, currently active)._
+## Policy hooks
 
-## SubagentStart
+`pre-write.sh` and `pre-bash.sh` are thin adapters into `cc-policy evaluate`. The policy engine remains first-deny-wins. v6 git custody is enforced by `bash_git_who.py`: implementers do not mutate git by default; Guardian owns commits, merges, pushes, worktrees, stash, branch/ref changes, and landing.
 
-- matcher `(unconditional)` → `hooks/subagent-start.sh`
-  - _Subagent lifecycle marker + context injection (CUTOVER_PLAN H2 / H3)._
+## Install smoke
 
-## SubagentStop
-
-- matcher `planner|Plan` → `hooks/check-planner.sh`
-  - _Planner completion assessment (CUTOVER_PLAN W1)._
-- matcher `planner|Plan` → `hooks/post-task.sh`
-  - _Thin post-task adapter — routes to dispatch_engine.process_agent_stop (DEC-DISPATCH-ENGINE-001)._
-- matcher `implementer` → `hooks/check-implementer.sh`
-  - _Implementer completion assessment (CUTOVER_PLAN W2)._
-- matcher `implementer` → `hooks/implementer-critic.sh`
-  - _Dedicated Codex tactical critic for implementer inner-loop routing._
-- matcher `implementer` → `hooks/post-task.sh`
-  - _Thin post-task adapter for implementer stops._
-- matcher `guardian` → `hooks/check-guardian.sh`
-  - _Guardian completion assessment (CUTOVER_PLAN W5 / W6). Also recognizes Guardian admission trailers and emits admission audit context without canonical completion routing._
-- matcher `guardian` → `hooks/post-task.sh`
-  - _Thin post-task adapter for guardian stops. Skips non-canonical Guardian admission stops._
-- matcher `reviewer` → `hooks/check-reviewer.sh`
-  - _Phase 4 reviewer completion assessment — parses REVIEW_* trailers and submits structured completion record (DEC-CHECK-REVIEWER-001)._
-- matcher `reviewer` → `hooks/post-task.sh`
-  - _Thin post-task adapter for reviewer stops._
-
-## PreCompact
-
-- matcher `(unconditional)` → `hooks/compact-preserve.sh`
-  - _Context preservation before auto-compact._
-
-## Stop
-
-- matcher `(unconditional)` → `hooks/surface.sh`
-  - _Surface diagnostics at turn end (CUTOVER_PLAN O2 read-only)._
-- matcher `(unconditional)` → `hooks/session-summary.sh`
-  - _Stop-time summarization (CUTOVER_PLAN H5 Partial)._
-- matcher `(unconditional)` → `hooks/stop-advisor.sh`
-  - _Deterministic Stop advisor for obvious bookkeeping, dispatch, and Guardian-owned git actions._
-
-## SessionEnd
-
-- matcher `(unconditional)` → `hooks/session-end.sh`
-  - _Session teardown diagnostics._
+```bash
+cc-policy doctor
+bash tests/scenarios/test-v6-prompt-bootstrap.sh
+bash tests/scenarios/test-v6-ticket-flow.sh
+bash tests/scenarios/test-v6-critic-auto.sh
+bash tests/scenarios/test-v6-backup-restore.sh
+```

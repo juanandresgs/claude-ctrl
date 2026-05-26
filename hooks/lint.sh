@@ -5,27 +5,28 @@
 # Highest-impact hook: creates feedback loops where lint errors feed back
 # into Claude via exit code 2, triggering automatic fixes.
 #
-# Detection: scans project root for linter config files, caches result per
-# extension in state.db so multi-language projects are handled correctly.
-# Durable enforcement-gap state is also stored in state.db.
+# Detection: scans project root for linter config files, caches result
+# per extension (.lint-cache-<ext>) so multi-language projects are handled
+# correctly. Each extension has its own cache, breaker, and gap state.
 #
 # Enforcement-gap policy (TKT-024):
 #   A source file with no linter profile ("none") is an ENFORCEMENT GAP —
 #   not a neutral skip. Silent exit 0 is replaced by:
 #     1. exit 2 + additionalContext to the model (immediate feedback)
-#     2. Persisted entry in state.db enforcement_gaps (survives session)
+#     2. Persisted entry in .claude/.enforcement-gaps (survives session)
 #     3. GitHub Issue filed via canonical bug pipeline (rt_bug_file, best-effort)
 #   The write gate (pre-write.sh / check_enforcement_gap) escalates to
 #   permissionDecision=deny when encounter_count > 1 for the same ext.
 #
 # @decision DEC-LINT-001
-# @title DB-backed per-extension cache and enforcement-gap policy
+# @title Per-extension cache and enforcement-gap policy
 # @status accepted
-# @rationale Per-extension detection prevents multi-language repos from using
-#   the wrong linter. Cache and circuit-breaker state belong in state.db rather
-#   than project-local flatfiles. The gap-policy replaces the silent "none -> exit 0" path
-#   with a loud failure that guarantees no source write goes unnoticed by
-#   enforcement. Durable gap state lives in state.db.
+# @rationale The old single .lint-cache stored the first detected linter
+#   across all extensions. Multi-language repos would use the wrong linter
+#   after detecting any one. Per-ext caches (.lint-cache-py, .lint-cache-sh,
+#   etc.) fix detection accuracy and allow targeted invalidation. The
+#   gap-policy replaces the silent "none -> exit 0" path with a loud failure
+#   that guarantees no source write goes unnoticed by enforcement.
 #   Shell files (sh/bash/zsh) now map to shellcheck — no config file needed.
 set -euo pipefail
 
@@ -33,7 +34,6 @@ source "$(dirname "$0")/log.sh"
 source "$(dirname "$0")/context-lib.sh"
 
 HOOK_INPUT=$(read_input)
-seed_project_dir_from_hook_payload_cwd "$HOOK_INPUT"
 FILE_PATH=$(get_field '.tool_input.file_path')
 
 # Exit silently if no file path or file doesn't exist
@@ -45,7 +45,6 @@ is_source_file "$FILE_PATH" || exit 0
 
 # Skip non-source directories
 is_skippable_path "$FILE_PATH" && exit 0
-is_scratchlane_path "$FILE_PATH" && exit 0
 
 # Derive extension for per-extension caching
 FILE_EXT="${FILE_PATH##*.}"
@@ -54,40 +53,74 @@ FILE_EXT="${FILE_PATH##*.}"
 # --- Detect project root ---
 PROJECT_ROOT=$(detect_project_root)
 
+# --- Per-extension state paths ---
+CACHE_DIR="$PROJECT_ROOT/.claude"
+mkdir -p "$CACHE_DIR"
+CACHE_FILE="$CACHE_DIR/.lint-cache-${FILE_EXT}"
+BREAKER_FILE="$CACHE_DIR/.lint-breaker-${FILE_EXT}"
+GAPS_FILE="$CACHE_DIR/.enforcement-gaps"
+
 # =============================================================================
 # ENFORCEMENT GAP STATE MANAGEMENT
+# Gap file format: type|ext|tool|first_epoch|encounter_count
+# Keyed on type|ext (one line per unique gap).
 # =============================================================================
 
 # record_enforcement_gap <type> <ext> <tool>
 # Upsert: creates on first encounter, increments count on subsequent ones.
 record_enforcement_gap() {
     local gap_type="$1" ext="$2" tool="$3"
-    cc_policy enforcement-gap record \
-        --project-root "$PROJECT_ROOT" \
-        --gap-type "$gap_type" \
-        --ext "$ext" \
-        --tool "$tool" >/dev/null 2>&1 || true
+    local key="${gap_type}|${ext}"
+    local epoch
+    epoch=$(date +%s)
+
+    touch "$GAPS_FILE"
+
+    local existing
+    existing=$(grep "^${key}|" "$GAPS_FILE" 2>/dev/null || true)
+
+    if [[ -z "$existing" ]]; then
+        # First encounter
+        printf '%s|%s|%s|%s|1\n' "$gap_type" "$ext" "$tool" "$epoch" >> "$GAPS_FILE"
+    else
+        # Increment encounter count
+        local first_epoch count
+        first_epoch=$(printf '%s' "$existing" | cut -d'|' -f4)
+        count=$(printf '%s' "$existing" | cut -d'|' -f5)
+        count=$(( count + 1 ))
+        # Rewrite file with updated count (atomic via tmp file)
+        local tmp_file="${GAPS_FILE}.tmp.$$"
+        grep -v "^${key}|" "$GAPS_FILE" > "$tmp_file" 2>/dev/null || true
+        printf '%s|%s|%s|%s|%s\n' "$gap_type" "$ext" "$tool" "$first_epoch" "$count" >> "$tmp_file"
+        mv "$tmp_file" "$GAPS_FILE"
+    fi
 }
 
 # get_enforcement_gap_count <type> <ext>
 # Returns the encounter count for a gap, or 0 if not found.
 get_enforcement_gap_count() {
     local gap_type="$1" ext="$2"
-    cc_policy enforcement-gap count \
-        --project-root "$PROJECT_ROOT" \
-        --gap-type "$gap_type" \
-        --ext "$ext" 2>/dev/null \
-        | jq -r '.count // 0' 2>/dev/null || echo "0"
+    local key="${gap_type}|${ext}"
+
+    [[ ! -f "$GAPS_FILE" ]] && echo "0" && return
+    local line
+    line=$(grep "^${key}|" "$GAPS_FILE" 2>/dev/null || true)
+    if [[ -z "$line" ]]; then
+        echo "0"
+    else
+        printf '%s' "$line" | cut -d'|' -f5
+    fi
 }
 
 # clear_enforcement_gap <type> <ext>
 # Removes a resolved gap (self-healing when tool is installed or profile added).
 clear_enforcement_gap() {
     local gap_type="$1" ext="$2"
-    cc_policy enforcement-gap clear \
-        --project-root "$PROJECT_ROOT" \
-        --gap-type "$gap_type" \
-        --ext "$ext" >/dev/null 2>&1 || true
+    local key="${gap_type}|${ext}"
+    [[ ! -f "$GAPS_FILE" ]] && return
+    local tmp_file="${GAPS_FILE}.tmp.$$"
+    grep -v "^${key}|" "$GAPS_FILE" > "$tmp_file" 2>/dev/null || true
+    mv "$tmp_file" "$GAPS_FILE"
 }
 
 # file_enforcement_gap_backlog <type> <ext> <tool>
@@ -116,9 +149,9 @@ emit_gap_context() {
     local msg
 
     if [[ "$gap_type" == "unsupported" ]]; then
-        msg="ENFORCEMENT GAP (unsupported): No linter profile is configured for .${ext} files. Source writes to .${ext} files are not being linted. Add a linter config (e.g., shellcheck for .sh, a java linter for .java) to restore enforcement. Gap recorded in state.db (encounter #${count})."
+        msg="ENFORCEMENT GAP (unsupported): No linter profile is configured for .${ext} files. Source writes to .${ext} files are not being linted. Add a linter config (e.g., shellcheck for .sh, a java linter for .java) to restore enforcement. Gap recorded in .claude/.enforcement-gaps (encounter #${count})."
     else
-        msg="ENFORCEMENT GAP (missing_dep): Linter '${tool}' is detected for .${ext} files but is not installed. Install '${tool}' to restore lint enforcement for .${ext} files. Gap recorded in state.db (encounter #${count})."
+        msg="ENFORCEMENT GAP (missing_dep): Linter '${tool}' is detected for .${ext} files but is not installed. Install '${tool}' to restore lint enforcement for .${ext} files. Gap recorded in .claude/.enforcement-gaps (encounter #${count})."
     fi
 
     local escaped_msg
@@ -158,8 +191,8 @@ detect_linter() {
         fi
     fi
 
-    # JavaScript/TypeScript/frontend files
-    if [[ "$ext" =~ ^(ts|tsx|js|jsx|mjs|cjs|mts|cts|astro|vue|svelte|css|scss|sass|less|html|htm)$ ]]; then
+    # JavaScript/TypeScript files (including ES module variants mjs/cjs)
+    if [[ "$ext" =~ ^(ts|tsx|js|jsx|mjs|cjs)$ ]]; then
         if [[ -f "$root/biome.json" || -f "$root/biome.jsonc" ]]; then
             echo "biome"
             return
@@ -175,6 +208,11 @@ detect_linter() {
         fi
         if [[ -f "$root/package.json" ]] && grep -q '"prettier"' "$root/package.json" 2>/dev/null; then
             echo "prettier"
+            return
+        fi
+        # TypeScript-only projects that rely on tsc for type checking (no ESLint/Prettier)
+        if [[ "$ext" =~ ^(ts|tsx)$ ]] && [[ -f "$root/tsconfig.json" ]]; then
+            echo "tsc"
             return
         fi
     fi
@@ -229,52 +267,45 @@ check_linter_available() {
         govet)         command -v go &>/dev/null ;;
         shellcheck)    command -v shellcheck &>/dev/null ;;
         make-lint)     command -v make &>/dev/null ;;
+        tsc)           [[ -f "$PROJECT_ROOT/node_modules/.bin/tsc" ]] || command -v tsc &>/dev/null ;;
         none)          return 1 ;;
         *)             return 1 ;;
     esac
 }
 
-lint_config_mtime() {
-    local root="$1"
-    local max_mtime=0
-    local cfg mtime
-
-    for cfg in "$root/pyproject.toml" "$root/setup.cfg" \
-               "$root/biome.json" "$root/biome.jsonc" \
-               "$root/package.json" "$root/Cargo.toml" \
-               "$root/.golangci.yml" "$root/.golangci.yaml" \
-               "$root/go.mod" "$root/Makefile" \
-               "$root/.shellcheckrc" "$root"/.prettierrc*; do
-        [[ -f "$cfg" ]] || continue
-        mtime=$(file_mtime "$cfg")
-        [[ "$mtime" =~ ^[0-9]+$ ]] || mtime=0
-        [[ "$mtime" -gt "$max_mtime" ]] && max_mtime="$mtime"
-    done
-
-    printf '%s\n' "$max_mtime"
-}
-
 # =============================================================================
 # CACHE HANDLING (per-extension)
-# Invalidated when the current config mtime exceeds the stored DB signature.
+# Invalidated when any linter config file is newer than the cache file.
 # =============================================================================
 
-CONFIG_MTIME=$(lint_config_mtime "$PROJECT_ROOT")
-CACHE_JSON=$(cc_policy lint-state cache-get \
-    --project-root "$PROJECT_ROOT" \
-    --ext "$FILE_EXT" \
-    --config-mtime "$CONFIG_MTIME" 2>/dev/null || echo '{"found":false}')
-CACHE_FOUND=$(printf '%s' "$CACHE_JSON" | jq -r 'if .found then "yes" else "no" end' 2>/dev/null || echo "no")
+CACHE_STALE=false
+if [[ -f "$CACHE_FILE" ]]; then
+    for cfg in "$PROJECT_ROOT/pyproject.toml" "$PROJECT_ROOT/setup.cfg" \
+               "$PROJECT_ROOT/biome.json" "$PROJECT_ROOT/biome.jsonc" \
+               "$PROJECT_ROOT/package.json" "$PROJECT_ROOT/Cargo.toml" \
+               "$PROJECT_ROOT/.golangci.yml" "$PROJECT_ROOT/.golangci.yaml" \
+               "$PROJECT_ROOT/go.mod" "$PROJECT_ROOT/Makefile" \
+               "$PROJECT_ROOT/.shellcheckrc"; do
+        if [[ -f "$cfg" && "$cfg" -nt "$CACHE_FILE" ]]; then
+            CACHE_STALE=true
+            break
+        fi
+    done
+    if [[ "$CACHE_STALE" == "false" ]]; then
+        for cfg in "$PROJECT_ROOT"/.prettierrc*; do
+            if [[ -f "$cfg" && "$cfg" -nt "$CACHE_FILE" ]]; then
+                CACHE_STALE=true
+                break
+            fi
+        done
+    fi
+fi
 
-if [[ "$CACHE_FOUND" == "yes" ]]; then
-    LINTER=$(printf '%s' "$CACHE_JSON" | jq -r '.linter // "none"' 2>/dev/null || echo "none")
+if [[ -f "$CACHE_FILE" && "$CACHE_STALE" == "false" ]]; then
+    LINTER=$(cat "$CACHE_FILE")
 else
     LINTER=$(detect_linter "$PROJECT_ROOT" "$FILE_PATH")
-    cc_policy lint-state cache-set \
-        --project-root "$PROJECT_ROOT" \
-        --ext "$FILE_EXT" \
-        --linter "$LINTER" \
-        --config-mtime "$CONFIG_MTIME" >/dev/null 2>&1 || true
+    echo "$LINTER" > "$CACHE_FILE"
 fi
 
 # =============================================================================
@@ -282,7 +313,7 @@ fi
 #
 # PE-W5 scope note (Blocker PE-W5-B2):
 #   This hook is operational — it runs the linter, records enforcement gaps
-#   in state.db, and exits 2 to feed errors back to Claude.
+#   in .claude/.enforcement-gaps, and exits 2 to feed errors back to Claude.
 #   It does NOT issue permissionDecision=deny. The hard DENY for persistent
 #   gaps (encounter_count > 1) lives in the policy engine:
 #     runtime/core/policies/write_enforcement_gap.py (DEC-PE-W2-003)
@@ -326,37 +357,33 @@ if ! check_linter_available "$LINTER"; then
 fi
 
 # Linter available and no gap: self-heal any stale gap entries for this ext.
-clear_enforcement_gap "unsupported" "$FILE_EXT" || true
-clear_enforcement_gap "missing_dep" "$FILE_EXT" || true
+if [[ -f "$GAPS_FILE" ]]; then
+    grep -q "^unsupported|${FILE_EXT}|" "$GAPS_FILE" 2>/dev/null \
+        && clear_enforcement_gap "unsupported" "$FILE_EXT" || true
+    grep -q "^missing_dep|${FILE_EXT}|" "$GAPS_FILE" 2>/dev/null \
+        && clear_enforcement_gap "missing_dep" "$FILE_EXT" || true
+fi
 
 # =============================================================================
-# CIRCUIT BREAKER (per-extension, 5-minute cooling-off window, DB-backed)
+# CIRCUIT BREAKER (per-extension, 5-minute cooling-off window)
 # =============================================================================
 
-BREAKER_JSON=$(cc_policy lint-state breaker-get \
-    --project-root "$PROJECT_ROOT" \
-    --ext "$FILE_EXT" 2>/dev/null || echo '{"found":false,"state":"closed","failure_count":0,"updated_at":0}')
-BREAKER_STATE=$(printf '%s' "$BREAKER_JSON" | jq -r '.state // "closed"' 2>/dev/null || echo "closed")
-BREAKER_COUNT=$(printf '%s' "$BREAKER_JSON" | jq -r '.failure_count // 0' 2>/dev/null || echo "0")
-BREAKER_TIME=$(printf '%s' "$BREAKER_JSON" | jq -r '.updated_at // 0' 2>/dev/null || echo "0")
-[[ "$BREAKER_COUNT" =~ ^[0-9]+$ ]] || BREAKER_COUNT=0
-[[ "$BREAKER_TIME" =~ ^[0-9]+$ ]] || BREAKER_TIME=0
-NOW=$(date +%s)
-ELAPSED=$(( NOW - BREAKER_TIME ))
+if [[ -f "$BREAKER_FILE" ]]; then
+    BREAKER_STATE=$(cut -d'|' -f1 "$BREAKER_FILE")
+    BREAKER_COUNT=$(cut -d'|' -f2 "$BREAKER_FILE")
+    BREAKER_TIME=$(cut -d'|' -f3 "$BREAKER_FILE")
+    NOW=$(date +%s)
+    ELAPSED=$(( NOW - BREAKER_TIME ))
 
-if [[ "$BREAKER_STATE" == "open" && "$ELAPSED" -lt 300 ]]; then
-    cat <<BREAKER_EOF
+    if [[ "$BREAKER_STATE" == "open" && "$ELAPSED" -lt 300 ]]; then
+        cat <<BREAKER_EOF
 { "hookSpecificOutput": { "hookEventName": "PostToolUse",
     "additionalContext": "Lint circuit breaker OPEN ($BREAKER_COUNT consecutive failures). Skipping lint for $((300 - ELAPSED))s. Fix underlying lint issues to reset." } }
 BREAKER_EOF
-    exit 0
-elif [[ "$BREAKER_STATE" == "open" && "$ELAPSED" -ge 300 ]]; then
-    cc_policy lint-state breaker-set \
-        --project-root "$PROJECT_ROOT" \
-        --ext "$FILE_EXT" \
-        --state "half-open" \
-        --failure-count "$BREAKER_COUNT" \
-        --updated-at "$BREAKER_TIME" >/dev/null 2>&1 || true
+        exit 0
+    elif [[ "$BREAKER_STATE" == "open" && "$ELAPSED" -ge 300 ]]; then
+        echo "half-open|$BREAKER_COUNT|$BREAKER_TIME" > "$BREAKER_FILE"
+    fi
 fi
 
 # =============================================================================
@@ -437,6 +464,15 @@ run_lint() {
         make-lint)
             cd "$root" && make lint 2>&1
             ;;
+        tsc)
+            # Run tsc --noEmit from project root; covers all .ts/.tsx files in one pass.
+            # Prefer local npx tsc so the project's own TypeScript version is used.
+            if [[ -f "$root/node_modules/.bin/tsc" ]]; then
+                cd "$root" && npx tsc --noEmit 2>&1
+            elif command -v tsc &>/dev/null; then
+                cd "$root" && tsc --noEmit 2>&1
+            fi
+            ;;
     esac
 }
 
@@ -446,21 +482,15 @@ LINT_OUTPUT=$(run_lint "$LINTER" "$FILE_PATH" "$PROJECT_ROOT" 2>&1) || LINT_EXIT
 
 if [[ "$LINT_EXIT" -ne 0 ]]; then
     # Update circuit breaker
-    PREV_COUNT="$BREAKER_COUNT"
-    [[ "$PREV_COUNT" =~ ^[0-9]+$ ]] || PREV_COUNT=0
+    PREV_COUNT=0
+    if [[ -f "$BREAKER_FILE" ]]; then
+        PREV_COUNT=$(cut -d'|' -f2 "$BREAKER_FILE" 2>/dev/null || echo "0")
+    fi
     NEW_COUNT=$(( PREV_COUNT + 1 ))
     if [[ "$NEW_COUNT" -ge 3 ]]; then
-        cc_policy lint-state breaker-set \
-            --project-root "$PROJECT_ROOT" \
-            --ext "$FILE_EXT" \
-            --state "open" \
-            --failure-count "$NEW_COUNT" >/dev/null 2>&1 || true
+        echo "open|$NEW_COUNT|$(date +%s)" > "$BREAKER_FILE"
     else
-        cc_policy lint-state breaker-set \
-            --project-root "$PROJECT_ROOT" \
-            --ext "$FILE_EXT" \
-            --state "closed" \
-            --failure-count "$NEW_COUNT" >/dev/null 2>&1 || true
+        echo "closed|$NEW_COUNT|$(date +%s)" > "$BREAKER_FILE"
     fi
 
     # Lint failed — feed errors back to Claude via exit code 2
@@ -470,9 +500,7 @@ if [[ "$LINT_EXIT" -ne 0 ]]; then
 fi
 
 # Reset breaker on success
-cc_policy lint-state breaker-reset \
-    --project-root "$PROJECT_ROOT" \
-    --ext "$FILE_EXT" >/dev/null 2>&1 || true
+echo "closed|0|$(date +%s)" > "$BREAKER_FILE"
 
 # Lint passed — silent success
 exit 0

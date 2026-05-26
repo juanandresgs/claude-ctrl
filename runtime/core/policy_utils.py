@@ -33,66 +33,11 @@ Rationale: On macOS /tmp is a symlink to /private/tmp and /var/folders resolves
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-import json
 import os
 import re
 import subprocess
 from pathlib import Path
-from typing import Any, Optional
-
-from runtime.core.constitution_registry import is_constitution_level, normalize_repo_path
-
-# ---------------------------------------------------------------------------
-# Scope-list parsing — single canonical authority
-# @decision DEC-DISCIPLINE-SCOPE-PARSER-SINGLE-AUTH-001
-# Title: parse_scope_list is the sole canonical parser for workflow_scope JSON-TEXT
-# Status: accepted
-# Rationale: Four policy modules (write_plan_guard, write_who,
-#   bash_cross_branch_restore_ban, bash_shell_copy_ban) each carried a byte-identical
-#   local copy of _parse_scope_list. Independent copies can drift silently (e.g.,
-#   one copy adds a new input type) and each update requires touching N files
-#   instead of one. Slice 11 consolidates into this single authority so that:
-#   (a) One function, one location, one place to audit, one place to test.
-#   (b) All callers import via `from runtime.core.policy_utils import parse_scope_list
-#       as _parse_scope_list` — the local alias preserves existing call-sites
-#       unchanged while `<module>._parse_scope_list is parse_scope_list` becomes
-#       a testable identity invariant.
-#   (c) The single-authority invariant test
-#       (tests/runtime/policies/test_scope_parser_single_authority.py) fails loudly
-#       if any future maintainer re-introduces a local redefinition.
-# ---------------------------------------------------------------------------
-
-
-def parse_scope_list(raw: Any) -> list[str]:
-    """Decode a workflow_scope JSON-TEXT column to list[str].
-
-    Canonical single-authority parser shared by all policy modules that consume
-    workflow_scope.forbidden_paths / allowed_paths rows. See
-    DEC-DISCIPLINE-SCOPE-PARSER-SINGLE-AUTH-001.
-
-    Semantics (match legacy callers exactly):
-      - list  → keep only str elements, coerce each with str()
-      - str   → JSON-decode; if result is a list, apply same str-filter
-      - other → return []  (fail-open: malformed rows are not policy concerns)
-
-    Return type is list[str] to match the historical callers' type annotation.
-    The function is intentionally NOT renamed to use frozenset so existing
-    caller logic (e.g. ``if forbidden:`` truthiness checks) remains unchanged.
-
-    @decision DEC-DISCIPLINE-SCOPE-PARSER-SINGLE-AUTH-001
-    """
-    if isinstance(raw, list):
-        return [str(x) for x in raw if isinstance(x, str)]
-    if isinstance(raw, str):
-        try:
-            decoded = json.loads(raw)
-            if isinstance(decoded, list):
-                return [str(x) for x in decoded if isinstance(x, str)]
-        except (ValueError, TypeError):
-            pass
-    return []
-
+from typing import Optional
 
 # ---------------------------------------------------------------------------
 # Path identity normalization
@@ -140,15 +85,6 @@ SOURCE_EXTENSIONS: frozenset[str] = frozenset(
         "cjs",
         "mts",
         "cts",
-        "astro",
-        "vue",
-        "svelte",
-        "css",
-        "scss",
-        "sass",
-        "less",
-        "html",
-        "htm",
         "py",
         "rs",
         "go",
@@ -168,309 +104,6 @@ SOURCE_EXTENSIONS: frozenset[str] = frozenset(
     }
 )
 
-SCRATCHLANE_PARENT_REL: str = "tmp"
-LEGACY_SCRATCHLANE_PARENT_REL: str = "tmp/.claude-scratch"
-
-PATH_KIND_META: str = "meta"
-PATH_KIND_ARTIFACT: str = "artifact"
-PATH_KIND_ARTIFACT_CANDIDATE: str = "artifact_candidate"
-PATH_KIND_TMP_SOURCE_CANDIDATE: str = "tmp_source_candidate"
-PATH_KIND_GOVERNANCE: str = "governance"
-PATH_KIND_CONSTITUTION: str = "constitution"
-PATH_KIND_SOURCE: str = "source"
-PATH_KIND_OTHER: str = "other"
-
-
-@dataclass(frozen=True)
-class PolicyPathInfo:
-    """Canonical classification of a repo-targeted write path."""
-
-    raw_path: str
-    normalized_path: str
-    repo_relative_path: Optional[str]
-    kind: str
-    task_slug: str = ""
-    scratch_root: str = ""
-
-
-def scratchlane_parent(project_root: str) -> str:
-    """Return the canonical absolute project scratchlane parent."""
-    return normalize_path(os.path.join(project_root, SCRATCHLANE_PARENT_REL))
-
-
-def scratchlane_root(project_root: str, task_slug: str) -> str:
-    """Return the canonical absolute root for a task-local scratchlane."""
-    return normalize_path(os.path.join(project_root, SCRATCHLANE_PARENT_REL, sanitize_token(task_slug)))
-
-
-def legacy_scratchlane_parent(project_root: str) -> str:
-    """Return the pre-local-tmp scratchlane parent for migration/cleanup."""
-    return normalize_path(os.path.join(project_root, LEGACY_SCRATCHLANE_PARENT_REL))
-
-
-def legacy_scratchlane_root(project_root: str, task_slug: str) -> str:
-    """Return the pre-local-tmp scratchlane root for migration/cleanup."""
-    return normalize_path(os.path.join(project_root, LEGACY_SCRATCHLANE_PARENT_REL, sanitize_token(task_slug)))
-
-
-def _strip_worktree_prefix(path: str) -> str:
-    normalized = path.replace("\\", "/").lstrip("/")
-    parts = normalized.split("/")
-    if len(parts) >= 3 and parts[0] == ".worktrees":
-        return "/".join(parts[2:])
-    return normalized
-
-
-def to_repo_relative_path(
-    path: str,
-    project_root: str | None,
-    worktree_path: str | None = None,
-) -> Optional[str]:
-    """Convert a path to a repo-relative POSIX path when possible."""
-    if not path:
-        return None
-    if os.path.isabs(path):
-        normalized_path = normalize_path(path)
-        if worktree_path:
-            canonical_worktree = normalize_path(worktree_path)
-            if normalized_path == canonical_worktree:
-                return "."
-            prefix = canonical_worktree + os.sep
-            if normalized_path.startswith(prefix):
-                rel = normalized_path[len(prefix) :].lstrip(os.sep).lstrip("/")
-                return normalize_repo_path(rel)
-        if project_root:
-            canonical_root = normalize_path(project_root)
-            if normalized_path == canonical_root:
-                return "."
-            prefix = canonical_root + os.sep
-            if normalized_path.startswith(prefix):
-                rel = normalized_path[len(prefix) :].lstrip(os.sep).lstrip("/")
-                return normalize_repo_path(_strip_worktree_prefix(rel))
-        return None
-    return normalize_repo_path(_strip_worktree_prefix(path))
-
-
-def is_governance_repo_path(repo_relative_path: str | None) -> bool:
-    """Return True only for canonical governance paths in the repo namespace."""
-    if not repo_relative_path:
-        return False
-    normalized = normalize_repo_path(repo_relative_path)
-    if not normalized:
-        return False
-    if normalized in {"MASTER_PLAN.md", "CLAUDE.md"}:
-        return True
-    parts = normalized.split("/")
-    return len(parts) == 2 and parts[0] in {"agents", "docs"} and parts[1].endswith(".md")
-
-
-def suggest_scratchlane_task_slug(path: str) -> str:
-    """Choose a stable task slug from a target path."""
-    p = Path(path)
-    if p.suffix:
-        stem = p.stem
-        if stem:
-            return sanitize_token(stem)
-    name = p.name or p.parent.name or "task"
-    return sanitize_token(name)
-
-
-def is_tracked_repo_path(project_root: str, repo_relative_path: str | None) -> bool:
-    """Return True when ``repo_relative_path`` is tracked by git.
-
-    Scratchlane paths are only safe to treat as artifacts when they are not
-    tracked repo files. This helper deliberately lives in policy_utils so the
-    write-path and bash-path gates share one tracked-file probe.
-    """
-    if not project_root or not repo_relative_path:
-        return False
-    normalized = normalize_repo_path(repo_relative_path)
-    if not normalized:
-        return False
-    try:
-        result = subprocess.run(
-            [
-                "git",
-                "-C",
-                normalize_path(project_root),
-                "ls-files",
-                "--error-unmatch",
-                "--",
-                normalized,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return result.returncode == 0
-
-
-def is_path_under(root: str, path: str) -> bool:
-    if not root or not path:
-        return False
-    canonical_root = normalize_path(root)
-    canonical_path = normalize_path(path)
-    return canonical_path == canonical_root or canonical_path.startswith(canonical_root + os.sep)
-
-
-def _is_path_under(root: str, path: str) -> bool:
-    return is_path_under(root, path)
-
-
-def _scratchlane_task_slug_from_repo_path(repo_relative_path: str | None) -> str:
-    if not repo_relative_path:
-        return ""
-    parts = normalize_repo_path(repo_relative_path).split("/")
-    if len(parts) < 3:
-        return ""
-    if parts[0] != "tmp" or parts[1] == ".claude-scratch":
-        return ""
-    return sanitize_token(parts[1])
-
-
-def _legacy_scratchlane_task_slug(repo_relative_path: str | None) -> str:
-    if not repo_relative_path:
-        return ""
-    parts = normalize_repo_path(repo_relative_path).split("/")
-    for idx in range(0, len(parts) - 2):
-        if parts[idx] == "tmp" and parts[idx + 1] == ".claude-scratch":
-            return sanitize_token(parts[idx + 2])
-    return ""
-
-
-def classify_policy_path(
-    path: str,
-    *,
-    project_root: str = "",
-    worktree_path: str = "",
-    scratch_roots: tuple[str, ...] | frozenset[str] = (),
-) -> PolicyPathInfo:
-    """Classify a path for write/governance/artifact policy decisions.
-
-    Classification order is authoritative:
-      1. ``meta``               — under ``{project_root}/.claude/``
-      2. ``artifact``           — under an approved scratchlane root
-      3. ``artifact_candidate`` — under ``tmp/<task>/`` but not approved
-      4. ``artifact_candidate`` — legacy scratchlane path; the
-                                  scratchlane gate owns correction
-      5. ``governance``         — canonical governance path in repo namespace
-      6. ``constitution``       — canonical constitution-level repo path
-      7. ``tmp_source_candidate`` — source-looking file under ``tmp/`` outside scratchlane
-      8. ``source``             — regular non-skippable source file
-      9. ``other``              — anything else
-    """
-    raw_path = path or ""
-    canonical_project_root = normalize_path(project_root) if project_root else ""
-
-    if os.path.isabs(raw_path):
-        normalized_path = normalize_path(raw_path)
-    elif canonical_project_root:
-        normalized_path = normalize_path(os.path.join(canonical_project_root, raw_path))
-    else:
-        normalized_path = os.path.normpath(raw_path)
-
-    repo_relative_path = to_repo_relative_path(
-        normalized_path if os.path.isabs(normalized_path) else raw_path,
-        canonical_project_root or None,
-        worktree_path or None,
-    )
-
-    if canonical_project_root and _is_path_under(os.path.join(canonical_project_root, ".claude"), normalized_path):
-        return PolicyPathInfo(
-            raw_path=raw_path,
-            normalized_path=normalized_path,
-            repo_relative_path=repo_relative_path,
-            kind=PATH_KIND_META,
-        )
-
-    if canonical_project_root:
-        for root in scratch_roots:
-            if _is_path_under(root, normalized_path):
-                matched_root = normalize_path(root)
-                return PolicyPathInfo(
-                    raw_path=raw_path,
-                    normalized_path=normalized_path,
-                    repo_relative_path=repo_relative_path,
-                    kind=PATH_KIND_ARTIFACT,
-                    task_slug=sanitize_token(Path(matched_root).name),
-                    scratch_root=matched_root,
-                )
-
-    if canonical_project_root:
-        task_slug = _scratchlane_task_slug_from_repo_path(repo_relative_path)
-        if task_slug:
-            return PolicyPathInfo(
-                raw_path=raw_path,
-                normalized_path=normalized_path,
-                repo_relative_path=repo_relative_path,
-                kind=PATH_KIND_ARTIFACT_CANDIDATE,
-                task_slug=task_slug,
-                scratch_root=scratchlane_root(canonical_project_root, task_slug),
-            )
-
-    if canonical_project_root:
-        legacy_task_slug = _legacy_scratchlane_task_slug(repo_relative_path)
-        if legacy_task_slug:
-            return PolicyPathInfo(
-                raw_path=raw_path,
-                normalized_path=normalized_path,
-                repo_relative_path=repo_relative_path,
-                kind=PATH_KIND_ARTIFACT_CANDIDATE,
-                task_slug=legacy_task_slug,
-                scratch_root=scratchlane_root(canonical_project_root, legacy_task_slug),
-            )
-
-    if is_governance_repo_path(repo_relative_path):
-        return PolicyPathInfo(
-            raw_path=raw_path,
-            normalized_path=normalized_path,
-            repo_relative_path=repo_relative_path,
-            kind=PATH_KIND_GOVERNANCE,
-        )
-
-    if repo_relative_path and is_constitution_level(repo_relative_path):
-        return PolicyPathInfo(
-            raw_path=raw_path,
-            normalized_path=normalized_path,
-            repo_relative_path=repo_relative_path,
-            kind=PATH_KIND_CONSTITUTION,
-        )
-
-    if (
-        repo_relative_path
-        and repo_relative_path.startswith("tmp/")
-        and is_source_file(normalized_path)
-        and not is_skippable_path(normalized_path)
-    ):
-        task_slug = suggest_scratchlane_task_slug(normalized_path)
-        return PolicyPathInfo(
-            raw_path=raw_path,
-            normalized_path=normalized_path,
-            repo_relative_path=repo_relative_path,
-            kind=PATH_KIND_TMP_SOURCE_CANDIDATE,
-            task_slug=task_slug,
-            scratch_root=scratchlane_root(canonical_project_root, task_slug)
-            if canonical_project_root
-            else "",
-        )
-
-    if is_source_file(normalized_path) and not is_skippable_path(normalized_path):
-        return PolicyPathInfo(
-            raw_path=raw_path,
-            normalized_path=normalized_path,
-            repo_relative_path=repo_relative_path,
-            kind=PATH_KIND_SOURCE,
-        )
-
-    return PolicyPathInfo(
-        raw_path=raw_path,
-        normalized_path=normalized_path,
-        repo_relative_path=repo_relative_path,
-        kind=PATH_KIND_OTHER,
-    )
-
 
 def is_source_file(path: str) -> bool:
     """Check if a file has a source code extension.
@@ -483,26 +116,21 @@ def is_source_file(path: str) -> bool:
 
 
 def is_skippable_path(path: str) -> bool:
-    """Check if a path is generated/vendor output and should be skipped.
+    """Check if a path is test/config/generated/vendor and should be skipped.
 
     Matches: hooks/context-lib.sh:184 is_skippable_path()
 
     Two groups of patterns (same as shell):
-      Group 1 — file-level patterns: .generated., .min.
+      Group 1 — file-level patterns: .config., .test., .spec., __tests__,
+                 .generated., .min.
       Group 2 — directory-level patterns: node_modules, vendor, dist, build,
                  .next, __pycache__, .git
-
-    Config and test source files are intentionally not skipped. They are
-    implementation surface for write authority, plan enforcement, and
-    evaluation invalidation even when some downstream lint/test hooks choose
-    to treat them specially.
     """
     # Group 1: file-level markers
-    normalized = path.replace("\\", "/")
-    if re.search(r"(\.generated\.|\.min\.)", normalized):
+    if re.search(r"(\.config\.|\.test\.|\.spec\.|__tests__|\.generated\.|\.min\.)", path):
         return True
     # Group 2: directory-level markers
-    if re.search(r"(^|/)(node_modules|vendor|dist|build|\.next|__pycache__|\.git)(/|$)", normalized):
+    if re.search(r"(node_modules|vendor|dist|build|\.next|__pycache__|\.git)", path):
         return True
     return False
 

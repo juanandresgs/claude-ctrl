@@ -194,99 +194,6 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Test 5b: clean workspace does not show uncommitted count
-# ---------------------------------------------------------------------------
-echo ""
-echo "-- 5b: clean workspace — HUD does not claim uncommitted files"
-
-output=$(run_statusline)
-if printf '%s' "$output" | grep -q "uncommitted"; then
-    echo "  FAIL: clean workspace rendered an unexpected uncommitted count; output: $(printf '%s' "$output" | cat -v)"
-    FAILURES=$((FAILURES + 1))
-else
-    echo "  PASS: clean workspace renders without uncommitted count"
-fi
-
-# ---------------------------------------------------------------------------
-# Test 5c: active critic run renders compact statusline heartbeat
-# ---------------------------------------------------------------------------
-echo ""
-echo "-- 5c: active critic run — HUD shows critic heartbeat"
-
-CRITIC_RUN=$(policy critic-run start --workflow-id "wf-sl-critic" --provider codex)
-CRITIC_RUN_ID=$(printf '%s' "$CRITIC_RUN" | jq -r '.run_id // empty')
-policy critic-run progress \
-    --run-id "$CRITIC_RUN_ID" \
-    --message "Provider status: codex ready." \
-    --phase provider \
-    --status provider_ready >/dev/null
-
-output=$(run_statusline)
-if printf '%s' "$output" | grep -q "critic: running"; then
-    echo "  PASS: critic heartbeat present in HUD"
-else
-    echo "  FAIL: critic heartbeat missing; output: $(printf '%s' "$output" | cat -v)"
-    FAILURES=$((FAILURES + 1))
-fi
-if printf '%s' "$output" | grep -q "Provider status: codex ready"; then
-    echo "  PASS: critic progress detail present in HUD"
-else
-    echo "  FAIL: critic progress detail missing; output: $(printf '%s' "$output" | cat -v)"
-    FAILURES=$((FAILURES + 1))
-fi
-policy critic-run complete \
-    --run-id "$CRITIC_RUN_ID" \
-    --provider codex \
-    --verdict READY_FOR_REVIEWER \
-    --summary "Active critic closed." >/dev/null
-
-# ---------------------------------------------------------------------------
-# Test 5d: failed critic run renders as failure, not reviewer progress
-# ---------------------------------------------------------------------------
-echo ""
-echo "-- 5d: failed critic run — HUD shows critic failed"
-
-policy completion submit \
-    --lease-id "lease-sl-critic-failed" \
-    --workflow-id "wf-sl-critic-failed" \
-    --role implementer \
-    --payload '{"IMPL_STATUS":"complete","IMPL_HEAD_SHA":"abc123"}' >/dev/null
-FAILED_CRITIC_RUN=$(policy critic-run start --workflow-id "wf-sl-critic-failed" --provider external-critic)
-FAILED_CRITIC_RUN_ID=$(printf '%s' "$FAILED_CRITIC_RUN" | jq -r '.run_id // empty')
-policy critic-run complete \
-    --run-id "$FAILED_CRITIC_RUN_ID" \
-    --provider external-critic \
-    --verdict CRITIC_UNAVAILABLE \
-    --summary "External implementer critic did not run." \
-    --detail "No provider returned structured output." >/dev/null
-
-output=$(run_statusline)
-if printf '%s' "$output" | grep -q "critic failed: unavailable"; then
-    echo "  PASS: failed critic shown as failure"
-else
-    echo "  FAIL: failed critic not shown as failure; output: $(printf '%s' "$output" | cat -v)"
-    FAILURES=$((FAILURES + 1))
-fi
-if printf '%s' "$output" | grep -q "reviewer"; then
-    echo "  FAIL: failed critic rendered reviewer progress; output: $(printf '%s' "$output" | cat -v)"
-    FAILURES=$((FAILURES + 1))
-else
-    echo "  PASS: failed critic does not render reviewer progress"
-fi
-policy critic-run fallback-complete \
-    --workflow-id "wf-sl-critic-failed" \
-    --summary "Scenario cleanup after failed critic visibility assertion." >/dev/null
-PYTHONPATH="$REPO_ROOT" python3 - "$TEST_DB" <<'PYEOF'
-import sqlite3
-import sys
-
-conn = sqlite3.connect(sys.argv[1])
-conn.execute("DELETE FROM completion_records WHERE lease_id = ?", ("lease-sl-critic-failed",))
-conn.commit()
-conn.close()
-PYEOF
-
-# ---------------------------------------------------------------------------
 # Test 6: pending eval renders ⏳ eval in HUD (TKT-024)
 # ---------------------------------------------------------------------------
 echo ""
@@ -334,31 +241,11 @@ fi
 
 # ---------------------------------------------------------------------------
 # Test 7c: review indicator — codex review ALLOW renders in HUD (DEC-SL-160)
-#
-# A42 stabilization: the `last_review` snapshot projection uses a strict
-# `events.created_at > evaluation_state.updated_at` SQL filter (runtime/
-# core/statusline.py:312) to prevent a review from a previous eval cycle
-# carrying forward when a same-second eval reset happens (Bug #2 fix).
-# Tests 6/7 above set evaluation_state at second tick T; the
-# `codex_stop_review` event below was previously emitted in the SAME
-# second, so the strict `>` filter dropped the event and the snapshot
-# returned `reviewed=False`, producing the fallback HUD and a failed
-# Test 7c. Root cause reproduced deterministically: no-sleep = 4/5 FAIL;
-# 1s-sleep = 5/5 PASS across isolated-DB repro runs.
-#
-# Fix is scenario-harness-local: force a second-tick boundary between
-# the last evaluation_state write and the review event emit. 1-second
-# sleep is the minimum that guarantees a monotonic SQLite `CURRENT_TIMESTAMP`
-# advance in the worst case. The strict `>` semantic in statusline.py
-# remains intentional and correct; only the scenario timing was racy.
 # ---------------------------------------------------------------------------
 echo ""
 echo "-- 7c: review indicator — ALLOW review renders in HUD"
 
-# A42: second-tick separator — ensures codex_stop_review.created_at strictly
-# postdates the most recent evaluation_state.updated_at (set by Test 7).
 sleep 1
-
 policy event emit "codex_stop_review" --detail "VERDICT: ALLOW — workflow=wf-sl-test | looks good" >/dev/null
 
 output=$(run_statusline)
@@ -370,64 +257,16 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Test 7d: A40 runtime-behavior tied-shape pin — state-specific word AND
-# parenthesized workflow-id must BOTH appear in the SAME HUD output for each
-# live eval-state.
-#
-# Closes A39 residual risk: tests 6/7/7b use weak `grep -q "eval"` substring
-# checks that would pass even if cc-policy schema drift broke `.eval_status`
-# or `.eval_workflow` serialization (the word "eval" appears via the static
-# label `eval:` regardless of state). This test asserts the HUD actually
-# reflects the live runtime projection — if eval-state serialization breaks,
-# either the state-specific word (`pending`/`ready`) or the workflow
-# parenthesized suffix (`(wf-sl-test)`) will drop, and this test fails
-# loudly with a diagnostic that identifies which piece broke.
-#
-# The two sub-checks are independent (pending-state + ready-state) so a
-# partial regression surfaces which direction is broken.
-# ---------------------------------------------------------------------------
-echo ""
-echo "-- 7d: A40 runtime-behavior pin — tied (state-word, workflow-id) shape"
-
-# Sub-check 1: pending state — must render both `pending` word AND `(wf-sl-test)`.
-policy evaluation set "wf-sl-test" "pending" >/dev/null
-
-output=$(run_statusline)
-if printf '%s' "$output" | grep -q "pending" && \
-   printf '%s' "$output" | grep -q "(wf-sl-test)"; then
-    echo "  PASS: pending state renders tied shape (word 'pending' + '(wf-sl-test)')"
-else
-    echo "  FAIL: pending tied shape missing — cc-policy eval-state serialization"
-    echo "        may have drifted. output: $(printf '%s' "$output" | cat -v)"
-    FAILURES=$((FAILURES + 1))
-fi
-
-# Sub-check 2: ready_for_guardian state — must render both `ready` word AND `(wf-sl-test)`.
-policy evaluation set "wf-sl-test" "ready_for_guardian" --head-sha "abc123" >/dev/null
-
-output=$(run_statusline)
-if printf '%s' "$output" | grep -q "ready" && \
-   printf '%s' "$output" | grep -q "(wf-sl-test)"; then
-    echo "  PASS: ready state renders tied shape (word 'ready' + '(wf-sl-test)')"
-else
-    echo "  FAIL: ready tied shape missing — cc-policy eval-state serialization"
-    echo "        may have drifted. output: $(printf '%s' "$output" | cat -v)"
-    FAILURES=$((FAILURES + 1))
-fi
-
-# ---------------------------------------------------------------------------
 # Test 8: active agent renders ⚡<role> in HUD
 # ---------------------------------------------------------------------------
 echo ""
 echo "-- 8: active agent — HUD shows agent role"
 
-# Phase 8 Slice 11: use a live role (reviewer) — ``tester`` is retired and
-# markers set with role="tester" are rejected by ensure_schema cleanup.
-policy marker set "agent-sl-001" "reviewer" >/dev/null
+policy marker set "agent-sl-001" "tester" >/dev/null
 
 output=$(run_statusline)
-if printf '%s' "$output" | grep -q "reviewer"; then
-    echo "  PASS: agent role 'reviewer' present in HUD"
+if printf '%s' "$output" | grep -q "tester"; then
+    echo "  PASS: agent role 'tester' present in HUD"
 else
     echo "  FAIL: agent role missing; output: $(printf '%s' "$output" | cat -v)"
     FAILURES=$((FAILURES + 1))
@@ -450,30 +289,21 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Test 10: HUD renders without error after dispatch-state mutation
+# Test 10: dispatch status renders in HUD
 # DEC-WS6-001: dispatch_queue is non-authoritative. The statusline derives
 # dispatch status from completion records, not the queue. This test verifies
-# that the statusline renders without errors after a dispatch-state mutation
-# via the canonical dispatch lifecycle path.
-#
-# A41R update: replaced retired `policy dispatch cycle-start <cycle>` with
-# the canonical `policy dispatch agent-start <role> <agent_id>` lifecycle
-# invocation. Preserves the test's intent ("HUD renders healthy after
-# dispatch-related state activity") against the post-dispatch_queue-retirement
-# CLI surface. `agent-start` writes to `agent_markers` via
-# `lifecycle_mod.on_agent_start` — same canonical surface Test 8 exercises
-# via `marker set`, routed through the dispatch subcommand instead.
+# that the statusline renders without errors after a dispatch cycle start.
 # ---------------------------------------------------------------------------
 echo ""
-echo "-- 10: dispatch agent-start — HUD renders without error"
+echo "-- 10: dispatch cycle — HUD renders without error"
 
-policy dispatch agent-start reviewer "agent-sl-test-10" >/dev/null
+policy dispatch cycle-start "TKT012-CYCLE" >/dev/null
 
 output=$(run_statusline)
 if [[ -n "$output" ]]; then
-    echo "  PASS: HUD renders after dispatch agent-start"
+    echo "  PASS: dispatch cycle renders in HUD"
 else
-    echo "  FAIL: HUD empty after dispatch agent-start"
+    echo "  FAIL: HUD empty after dispatch cycle start"
     FAILURES=$((FAILURES + 1))
 fi
 
@@ -493,7 +323,7 @@ else
     FAILURES=$((FAILURES + 1))
 fi
 
-for segment in "test-model" "$workspace_name" "reviewer" "worktree" "tks" "eval"; do
+for segment in "test-model" "$workspace_name" "tester" "worktree" "tks" "eval"; do
     if printf '%s' "$output" | grep -q "$segment"; then
         echo "  PASS: segment '$segment' present in compound HUD"
     else
@@ -511,10 +341,10 @@ echo "-- 12: dirty count — untracked file shows dirty in HUD"
 printf 'untracked\n' > "$GIT_DIR/untracked.txt"
 
 output=$(run_statusline)
-if printf '%s' "$output" | grep -Eq "uncommitted|active|drift|baseline"; then
-    echo "  PASS: dirty count present when workspace has untracked files"
+if printf '%s' "$output" | grep -q "uncommitted"; then
+    echo "  PASS: uncommitted count present when workspace has untracked files"
 else
-    echo "  FAIL: dirty count missing despite untracked file; output: $(printf '%s' "$output" | cat -v)"
+    echo "  FAIL: 'uncommitted' missing despite untracked file; output: $(printf '%s' "$output" | cat -v)"
     FAILURES=$((FAILURES + 1))
 fi
 

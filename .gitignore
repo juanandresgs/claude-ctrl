@@ -8,21 +8,32 @@ __pycache__/
 state.db
 state.db-shm
 state.db-wal
-tmp/*
+tmp/
 .claude/
-.codex/hooks/
-.codex/config.local.toml
-telemetry/
+.claude.json
+.last-cleanup
+mcp-needs-auth-cache.json
+policy-limits.json
+runtime/dispatch-debug.jsonl
 
-# Plugin system — marketplace clones are mutable runtime cache.
-# First-party Codex review code lives under sidecars/codex-review.
+# Plugin system — track forked codex plugin source, ignore runtime state
 plugins/cache/
 plugins/data/
 plugins/blocklist.json
 plugins/install-counts-cache.json
 plugins/installed_plugins.json
 plugins/known_marketplaces.json
-plugins/marketplaces/
+plugins/marketplaces/**/.claude-plugin/
+plugins/marketplaces/openai-codex/.git/
+plugins/marketplaces/openai-codex/.github/
+plugins/marketplaces/openai-codex/.gitignore
+plugins/marketplaces/openai-codex/LICENSE
+plugins/marketplaces/openai-codex/NOTICE
+plugins/marketplaces/openai-codex/README.md
+plugins/marketplaces/openai-codex/package.json
+plugins/marketplaces/openai-codex/package-lock.json
+plugins/marketplaces/openai-codex/tests/
+plugins/marketplaces/openai-codex/tsconfig.app-server.json
 
 # Runtime artifacts
 backups/
@@ -33,6 +44,7 @@ image-cache/
 paste-cache/
 plans/
 projects/
+state/
 session-env/
 sessions/
 shell-snapshots/
@@ -40,23 +52,12 @@ tasks/
 .todo-count
 .worktrees/
 worktrees/
-runtime/cc_state.db
-runtime/dispatch-debug.jsonl
-runtime/prebash-trace.log
-traces/
-stats-cache.json
-watch_*
 
 # Ephemeral state reviews
-STATE_REVIEW.md
-review-artifacts/
+CURRENT_STATE_REVIEW.md
+
+# Marketplace clones (not our source)
+plugins/marketplaces/claude-plugins-official/
 
 # Secrets
 .env
-
-# Ephemeral braid / policy snapshot caches (not cutover scope)
-.b2r/
-.b2r-policy-v2-85/
-.b2r-v2-stable/
-.session-start-epoch
-ide/

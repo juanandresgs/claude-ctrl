@@ -311,20 +311,6 @@ def test_setup_fixture_has_initial_commit(project_tmp):
         eval_runner.cleanup_fixture(path)
 
 
-def test_setup_fixture_can_skip_git_for_admission_eval(project_tmp):
-    path = eval_runner.setup_fixture(
-        "clean-hello-world",
-        FIXTURES_DIR,
-        project_tmp,
-        git_enabled=False,
-    )
-    try:
-        assert path.exists()
-        assert not (path / ".git").exists()
-    finally:
-        eval_runner.cleanup_fixture(path)
-
-
 # ---------------------------------------------------------------------------
 # run_deterministic()
 # ---------------------------------------------------------------------------
@@ -394,45 +380,13 @@ def test_run_deterministic_implementer_role_allows_source_write(project_tmp):
         eval_runner.cleanup_fixture(path)
 
 
-def test_run_deterministic_admission_target(project_tmp):
-    scenario = {
-        "name": "admission-non-git-project",
-        "category": "gate",
-        "mode": "deterministic",
-        "fixture": "clean-hello-world",
-        "setup": {"eval_target": "admission", "git": False},
-        "input": {
-            "payload": {
-                "trigger": "source_write",
-                "target_path": "src/hello.py",
-            }
-        },
-        "ground_truth": {
-            "expected_verdict": "project_onboarding_required",
-        },
-    }
-    path = eval_runner.setup_fixture(
-        "clean-hello-world",
-        FIXTURES_DIR,
-        project_tmp,
-        git_enabled=False,
-    )
-    try:
-        result = eval_runner.run_deterministic(scenario, path, REPO_ROOT)
-        assert result["verdict"] == "project_onboarding_required"
-        assert result["error"] is None
-    finally:
-        eval_runner.cleanup_fixture(path)
-
-
-def test_run_deterministic_default_actor_role_is_reviewer(project_tmp):
-    """Phase 8 Slice 11: scenario without setup.actor_role defaults to
-    'reviewer' (deny) — tester was retired in Bundle 2."""
+def test_run_deterministic_default_actor_role_is_tester(project_tmp):
+    """Bug 1 regression: scenario without setup.actor_role defaults to 'tester' (deny)."""
     scenario = eval_runner.load_scenario(WRITE_WHO_DENY_YAML)
     path = eval_runner.setup_fixture("clean-hello-world", FIXTURES_DIR, project_tmp)
     try:
         result = eval_runner.run_deterministic(scenario, path, REPO_ROOT)
-        # write-who-deny has no setup.actor_role — defaults to reviewer → deny
+        # write-who-deny has no setup.actor_role — defaults to tester → deny
         assert result["verdict"] == "deny"
         assert result["error"] is None
     finally:

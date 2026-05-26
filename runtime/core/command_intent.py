@@ -7,19 +7,15 @@ constructs a typed view once and policies consume that shared object.
 
 from __future__ import annotations
 
-import os
-import shlex
 from dataclasses import dataclass
 import re
 from typing import Optional
 
 from runtime.core.leases import (
     GitInvocation,
-    _split_shell_segments,
     _shell_tokens,
-    classify_git_invocation,
     classify_git_op,
-    parse_git_invocations,
+    parse_git_invocation,
 )
 from runtime.core.policy_utils import (
     extract_cd_target,
@@ -27,10 +23,6 @@ from runtime.core.policy_utils import (
     normalize_path,
     resolve_path_from_base,
 )
-
-_WRITE_TARGET_SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&"})
-_WRITE_TARGET_REDIRECT_TOKENS = frozenset({">", ">>", "1>", "1>>", "2>", "2>>"})
-_WRITE_TARGET_MUTATING_COMMANDS = frozenset({"cp", "mv", "install", "touch", "truncate"})
 
 _WORKTREE_ADD_RE = re.compile(r"\bgit\b.*\bworktree\s+add\b")
 _WORKTREE_REMOVE_RE = re.compile(r"\bgit\b.*\bworktree\s+remove\b")
@@ -56,36 +48,6 @@ _WORKTREE_BOOLEAN_FLAGS = frozenset(
     ]
 )
 _WORKTREE_REMOVE_BOOLEAN_FLAGS = frozenset(["-f", "--force"])
-_PATH_TARGET_SUBCOMMANDS = frozenset(
-    {
-        "add",
-        "checkout",
-        "diff",
-        "mv",
-        "restore",
-        "rm",
-        "status",
-    }
-)
-_PATH_TARGET_FLAGS_WITH_VALUE = frozenset(
-    {
-        "--pathspec-from-file",
-        "--chmod",
-        "--ignore-missing",
-        "--ignore-removal",
-        "--rename-threshold",
-        "-M",
-        "-C",
-    }
-)
-
-
-@dataclass(frozen=True)
-class GitOperationIntent:
-    """One parsed git invocation plus its policy operation class."""
-
-    invocation: GitInvocation
-    op_class: str
 
 
 @dataclass(frozen=True)
@@ -95,8 +57,6 @@ class BashCommandIntent:
     command: str
     shell_parse_error: bool
     git_invocation: Optional[GitInvocation]
-    git_invocations: tuple[GitInvocation, ...]
-    git_operations: tuple[GitOperationIntent, ...]
     git_op_class: str
     target_cwd: str
     command_cwd: str
@@ -142,92 +102,6 @@ def _extract_git_c_arg(invocation: Optional[GitInvocation]) -> str:
     return ""
 
 
-def _looks_like_path_token(token: str, base: str) -> bool:
-    if not token:
-        return False
-    if token == "--":
-        return False
-    if os.path.isabs(token) or token.startswith(("./", "../", "~/", "~")):
-        return True
-    if os.sep in token or (os.altsep and os.altsep in token):
-        return True
-    resolved = resolve_path_from_base(base, token)
-    return bool(resolved and os.path.exists(resolved))
-
-
-def _target_dir_for_path_token(token: str, base: str) -> str:
-    if not _looks_like_path_token(token, base):
-        return ""
-    resolved = resolve_path_from_base(base, token)
-    if not resolved:
-        return ""
-    if os.path.isdir(resolved):
-        return normalize_path(resolved)
-    if os.path.exists(resolved):
-        return normalize_path(os.path.dirname(resolved))
-    parent = os.path.dirname(resolved)
-    if parent and os.path.isdir(parent):
-        return normalize_path(parent)
-    return ""
-
-
-def _extract_git_path_target_dir(invocation: Optional[GitInvocation], base: str) -> str:
-    """Return a target directory from unambiguous git pathspec arguments.
-
-    This is deliberately conservative. It only considers path-oriented git
-    subcommands and only returns a directory when all recognized path tokens
-    resolve under the same directory. Ambiguous branch-ish arguments such as
-    ``git checkout feature`` are ignored.
-    """
-    if invocation is None or invocation.subcommand not in _PATH_TARGET_SUBCOMMANDS:
-        return ""
-
-    args = list(invocation.args)
-    if not args:
-        return ""
-
-    if "--" in args:
-        args = args[args.index("--") + 1 :]
-    elif invocation.subcommand == "checkout":
-        # Without "--", checkout arguments are branch-ish as often as paths.
-        return ""
-
-    targets: list[str] = []
-    index = 0
-    while index < len(args):
-        token = args[index]
-        if token == "--":
-            targets.extend(args[index + 1 :])
-            break
-        if token in _PATH_TARGET_FLAGS_WITH_VALUE:
-            index += 2
-            continue
-        if any(token.startswith(flag + "=") for flag in _PATH_TARGET_FLAGS_WITH_VALUE):
-            index += 1
-            continue
-        if token.startswith("-"):
-            index += 1
-            continue
-        targets.append(token)
-        index += 1
-
-    resolved_dirs = {
-        directory
-        for token in targets
-        if (directory := _target_dir_for_path_token(token, base))
-    }
-    if len(resolved_dirs) == 1:
-        return next(iter(resolved_dirs))
-    return ""
-
-
-def _first_worktree_invocation(invocations: tuple[GitInvocation, ...]) -> Optional[GitInvocation]:
-    for invocation in invocations:
-        if invocation.subcommand == "worktree" and invocation.args:
-            return invocation
-    return None
-
-
 def _extract_worktree_add_target(args: list[str]) -> str:
     if not args or args[0] != "add":
         return ""
@@ -269,95 +143,11 @@ def _extract_worktree_remove_target(args: list[str]) -> str:
     return ""
 
 
-def extract_single_simple_command_argv(command: str) -> Optional[tuple[str, ...]]:
-    """Return argv when ``command`` is exactly one top-level shell segment.
-
-    This keeps top-level shell tokenization in the command-intent authority.
-    Policies that need to identify a wrapper executable can consume this
-    pre-tokenized shape instead of reparsing raw Bash text themselves.
-    """
-    if not command:
-        return None
-    try:
-        segments = _split_shell_segments(_shell_tokens(command))
-    except ValueError:
-        return None
-    if len(segments) != 1:
-        return None
-    return tuple(segments[0])
-
-
-def extract_bash_write_targets(command: str) -> set[str]:
-    """Return the raw shell-level write targets referenced by ``command``.
-
-    Recognizes three classes of write-producing constructs:
-      - redirection targets after ``>``, ``>>``, ``1>``, ``1>>``, ``2>``, ``2>>``
-      - ``tee`` argument targets (positional, pre-separator)
-      - last positional of ``cp`` / ``mv`` / ``install`` / ``touch`` / ``truncate``
-
-    Tokenization uses ``shlex`` with ``><;&|`` as punctuation so redirects glued
-    to their targets (``>/etc/x``) split correctly. This is the single
-    authority for this form of bash target extraction; policies consume it
-    rather than reimplementing tokenization.
-    """
-    targets: set[str] = set()
-    if not command:
-        return targets
-    try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars="><;&|")
-        lexer.whitespace_split = True
-        tokens = list(lexer)
-    except ValueError:
-        return targets
-
-    index = 0
-    while index < len(tokens):
-        token = tokens[index]
-
-        if token in _WRITE_TARGET_REDIRECT_TOKENS and index + 1 < len(tokens):
-            target = tokens[index + 1]
-            if (
-                target
-                and target not in _WRITE_TARGET_SHELL_SEPARATORS
-                and target not in _WRITE_TARGET_REDIRECT_TOKENS
-            ):
-                targets.add(target)
-            index += 2
-            continue
-
-        cmd = os.path.basename(token)
-        if cmd == "tee":
-            cursor = index + 1
-            while cursor < len(tokens) and tokens[cursor] not in _WRITE_TARGET_SHELL_SEPARATORS:
-                arg = tokens[cursor]
-                if arg and not arg.startswith("-") and arg not in _WRITE_TARGET_REDIRECT_TOKENS:
-                    targets.add(arg)
-                cursor += 1
-            index = cursor
-            continue
-
-        if cmd in _WRITE_TARGET_MUTATING_COMMANDS:
-            cursor = index + 1
-            args: list[str] = []
-            while cursor < len(tokens) and tokens[cursor] not in _WRITE_TARGET_SHELL_SEPARATORS:
-                args.append(tokens[cursor])
-                cursor += 1
-            positional = [a for a in args if a and not a.startswith("-")]
-            if positional:
-                targets.add(positional[-1])
-            index = cursor
-            continue
-
-        index += 1
-
-    return targets
-
-
 def build_bash_command_intent(command: str, *, cwd: str = "") -> Optional[BashCommandIntent]:
     """Build a structured command-intent object from raw bash text.
 
     The intent carries the single runtime-owned interpretation of the command:
-      - git_invocations / git_operations: canonical git classification
+      - git_invocation / git_op_class: canonical git classification
       - target_cwd / command_cwd: repo-target and effective execution cwd
       - cd_target*: bare-cd targeting for worktree safety policies
       - worktree_*: explicit add/remove semantics and resolved targets
@@ -373,36 +163,23 @@ def build_bash_command_intent(command: str, *, cwd: str = "") -> Optional[BashCo
     except ValueError:
         shell_parse_error = True
 
-    git_invocations = parse_git_invocations(command)
-    git_invocation = git_invocations[0] if git_invocations else None
-    git_operations = tuple(
-        GitOperationIntent(invocation=invocation, op_class=classify_git_invocation(invocation))
-        for invocation in git_invocations
-    )
-    git_op_class = classify_git_op(command) if git_invocations else "unclassified"
+    git_invocation = parse_git_invocation(command)
+    git_op_class = classify_git_op(command) if git_invocation is not None else "unclassified"
     base_cwd = normalize_path(cwd) if cwd else ""
     cd_target = extract_cd_target(command) or ""
     cd_target_resolved = _resolve_from_base(base_cwd or cwd, cd_target) if cd_target else ""
     git_c_arg = _extract_git_c_arg(git_invocation)
-    git_c_target_resolved = _resolve_from_base(base_cwd or cwd, git_c_arg) if git_c_arg else ""
-    command_cwd = cd_target_resolved or git_c_target_resolved or base_cwd
-    path_target_dir = _extract_git_path_target_dir(git_invocation, command_cwd or base_cwd or cwd)
-    target_cwd = (
-        cd_target_resolved
-        or git_c_target_resolved
-        or path_target_dir
-        or extract_git_target_dir(command, cwd=cwd)
-    )
+    command_cwd = cd_target_resolved or _resolve_from_base(base_cwd or cwd, git_c_arg) or base_cwd
+    target_cwd = extract_git_target_dir(command, cwd=cwd)
     worktree_action = None
     worktree_target_raw = ""
     worktree_target_resolved = ""
-    worktree_invocation = _first_worktree_invocation(git_invocations)
-    if worktree_invocation is not None:
-        worktree_action = worktree_invocation.args[0]
+    if git_invocation is not None and git_invocation.subcommand == "worktree" and git_invocation.args:
+        worktree_action = git_invocation.args[0]
         if worktree_action == "add":
-            worktree_target_raw = _extract_worktree_add_target(list(worktree_invocation.args))
+            worktree_target_raw = _extract_worktree_add_target(list(git_invocation.args))
         elif worktree_action == "remove":
-            worktree_target_raw = _extract_worktree_remove_target(list(worktree_invocation.args))
+            worktree_target_raw = _extract_worktree_remove_target(list(git_invocation.args))
         if worktree_target_raw:
             anchor = command_cwd or base_cwd or cwd
             worktree_target_resolved = _resolve_from_base(anchor, worktree_target_raw)
@@ -411,8 +188,6 @@ def build_bash_command_intent(command: str, *, cwd: str = "") -> Optional[BashCo
         command=command,
         shell_parse_error=shell_parse_error,
         git_invocation=git_invocation,
-        git_invocations=git_invocations,
-        git_operations=git_operations,
         git_op_class=git_op_class,
         target_cwd=target_cwd,
         command_cwd=command_cwd,

@@ -18,22 +18,16 @@ import os
 import sys
 from pathlib import Path
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from runtime.core.policy_utils import (
-    PATH_KIND_ARTIFACT_CANDIDATE,
-    PATH_KIND_SOURCE,
     SOURCE_EXTENSIONS,
-    classify_policy_path,
     extract_cd_target,
     extract_git_target_dir,
     is_claude_meta_repo,
     is_governance_markdown,
     is_skippable_path,
     is_source_file,
-    parse_scope_list,
     resolve_path_from_base,
     sanitize_token,
 )
@@ -69,21 +63,6 @@ def test_is_source_file_sh():
 
 def test_is_source_file_json_false():
     assert is_source_file("config.json") is False
-
-
-@pytest.mark.parametrize("path", [
-    "src/pages/index.astro",
-    "src/App.vue",
-    "src/App.svelte",
-    "src/styles/global.css",
-    "src/styles/theme.scss",
-    "src/styles/theme.sass",
-    "src/styles/theme.less",
-    "public/index.html",
-    "public/index.htm",
-])
-def test_is_source_file_frontend_extensions(path):
-    assert is_source_file(path) is True
 
 
 def test_is_source_file_all_extensions():
@@ -168,20 +147,16 @@ def test_is_skippable_node_modules():
     assert is_skippable_path("node_modules/react/index.js") is True
 
 
-def test_is_not_skippable_test_file():
-    assert is_skippable_path("src/foo.test.ts") is False
+def test_is_skippable_test_file():
+    assert is_skippable_path("src/foo.test.ts") is True
 
 
-def test_is_not_skippable_spec_file():
-    assert is_skippable_path("src/bar.spec.js") is False
+def test_is_skippable_spec_file():
+    assert is_skippable_path("src/bar.spec.js") is True
 
 
-def test_is_not_skippable_tests_dir():
-    assert is_skippable_path("src/__tests__/helpers.py") is False
-
-
-def test_is_not_skippable_config_source():
-    assert is_skippable_path("astro.config.mjs") is False
+def test_is_skippable_tests_dir():
+    assert is_skippable_path("src/__tests__/helpers.py") is True
 
 
 def test_is_skippable_vendor():
@@ -206,54 +181,6 @@ def test_not_skippable_src_file():
 
 def test_not_skippable_plain_source():
     assert is_skippable_path("runtime/core/policy.py") is False
-
-
-def test_project_root_tmp_task_path_is_scratchlane_candidate(tmp_path):
-    project = tmp_path / "project"
-    target = project / "tmp" / "ad-hoc" / "helper.py"
-
-    info = classify_policy_path(
-        str(target),
-        project_root=str(project),
-        worktree_path=str(project),
-    )
-
-    assert info.kind == PATH_KIND_ARTIFACT_CANDIDATE
-    assert info.task_slug == "ad-hoc"
-
-
-def test_nested_tmp_task_path_is_regular_source(tmp_path):
-    project = tmp_path / "project"
-    target = project / "subdir" / "tmp" / "ad-hoc" / "helper.py"
-
-    info = classify_policy_path(
-        str(target),
-        project_root=str(project),
-        worktree_path=str(project),
-    )
-
-    assert info.kind == PATH_KIND_SOURCE
-    assert info.task_slug == ""
-
-
-@pytest.mark.parametrize("relative_path", [
-    "site/src/pages/index.astro",
-    "site/src/styles/global.css",
-    "site/astro.config.mjs",
-    "site/src/content.config.ts",
-    "site/src/app.test.ts",
-])
-def test_frontend_config_and_test_paths_classify_as_source(tmp_path, relative_path):
-    project = tmp_path / "project"
-    target = project / relative_path
-
-    info = classify_policy_path(
-        str(target),
-        project_root=str(project),
-        worktree_path=str(project),
-    )
-
-    assert info.kind == PATH_KIND_SOURCE
 
 
 # ---------------------------------------------------------------------------
@@ -549,108 +476,3 @@ def test_extract_git_target_dir_fallback_cwd(tmp_path):
 def test_resolve_path_from_base_expands_home():
     result = resolve_path_from_base("/tmp/project", "~")
     assert result == os.path.expanduser("~")
-
-
-# ---------------------------------------------------------------------------
-# parse_scope_list — canonical single-authority scope-list parser
-# DEC-DISCIPLINE-SCOPE-PARSER-SINGLE-AUTH-001
-# ---------------------------------------------------------------------------
-
-
-def test_parse_scope_list_none_returns_empty():
-    """None input → empty list (fail-open for missing DB column)."""
-    assert parse_scope_list(None) == []
-
-
-def test_parse_scope_list_empty_string_returns_empty():
-    """Empty string is not valid JSON → fail-open → empty list."""
-    assert parse_scope_list("") == []
-
-
-def test_parse_scope_list_json_encoded_list():
-    """JSON-encoded list (production DB format) is decoded correctly."""
-    import json
-    raw = json.dumps(["runtime/**", "hooks/**", "agents/*.md"])
-    result = parse_scope_list(raw)
-    assert result == ["runtime/**", "hooks/**", "agents/*.md"]
-
-
-def test_parse_scope_list_plain_list():
-    """Native list input passes through, coercing each element to str."""
-    raw = ["runtime/**", "hooks/**"]
-    result = parse_scope_list(raw)
-    assert result == ["runtime/**", "hooks/**"]
-
-
-def test_parse_scope_list_tuple_not_supported():
-    """Tuple is not list or str → fail-open → empty list."""
-    result = parse_scope_list(("runtime/**", "hooks/**"))
-    assert result == []
-
-
-def test_parse_scope_list_single_string_not_json():
-    """A bare non-JSON string (not a JSON array) → fail-open → empty list."""
-    result = parse_scope_list("runtime/**")
-    assert result == []
-
-
-def test_parse_scope_list_json_encoded_empty_array():
-    """JSON-encoded empty array → empty list."""
-    import json
-    assert parse_scope_list(json.dumps([])) == []
-
-
-def test_parse_scope_list_duplicates_preserved():
-    """Duplicate entries in the list are preserved (not collapsed).
-
-    The caller decides whether to deduplicate; the parser is faithful.
-    """
-    import json
-    raw = json.dumps(["runtime/**", "runtime/**", "hooks/**"])
-    result = parse_scope_list(raw)
-    assert result == ["runtime/**", "runtime/**", "hooks/**"]
-
-
-def test_parse_scope_list_non_string_elements_filtered():
-    """Non-string elements in a native list are silently filtered out.
-
-    The filter `if isinstance(x, str)` drops ints, None, etc.
-    """
-    raw = ["runtime/**", 42, None, "hooks/**"]
-    result = parse_scope_list(raw)
-    assert result == ["runtime/**", "hooks/**"]
-
-
-def test_parse_scope_list_json_non_string_elements_filtered():
-    """Non-string elements in a JSON-decoded list are silently filtered."""
-    import json
-    raw = json.dumps(["runtime/**", 42, None, "hooks/**"])
-    result = parse_scope_list(raw)
-    assert result == ["runtime/**", "hooks/**"]
-
-
-def test_parse_scope_list_malformed_json_returns_empty():
-    """Malformed JSON string → fail-open → empty list."""
-    result = parse_scope_list("{not-json}")
-    assert result == []
-
-
-def test_parse_scope_list_json_object_not_list_returns_empty():
-    """JSON-decoded dict is not a list → fail-open → empty list."""
-    import json
-    raw = json.dumps({"key": "value"})
-    result = parse_scope_list(raw)
-    assert result == []
-
-
-def test_parse_scope_list_integer_input_returns_empty():
-    """Integer input (not list or str) → fail-open → empty list."""
-    assert parse_scope_list(42) == []  # type: ignore[arg-type]
-
-
-def test_parse_scope_list_return_type_is_list():
-    """Return type is always list[str], never frozenset or tuple."""
-    import json
-    result = parse_scope_list(json.dumps(["runtime/**"]))
-    assert isinstance(result, list)
-    assert all(isinstance(x, str) for x in result)

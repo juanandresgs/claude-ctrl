@@ -7,7 +7,7 @@
 #   1. Non-guardian "git -C ... push" → denied (Check 3 WHO)
 #   2. "git -C ... commit" on main → denied (Check 4 main-is-sacred)
 #   3. "git -C ... commit" with failing tests → denied (Check 9 test gate)
-#   4. "git -C ... commit" without evaluation clearance → denied (Check 10 eval gate)
+#   4. "git -C ... commit" without proof verified → denied (Check 10 proof gate)
 #
 # @decision DEC-GUARD-013
 # @title Guard checks must fire for git -C command format
@@ -91,7 +91,7 @@ check_deny "sub-test 1 (lease)" "$output" "lease"
 # bypassed (meta-repo), Check 4 would be the gate. This sub-test verifies
 # guard.sh fires (any deny) for git -C commit on main.
 setup_repo
-CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian:land" --project-root "$TMP_DIR" >/dev/null 2>&1
+CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" --project-root "$TMP_DIR" >/dev/null 2>&1
 CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
     test-state set pass --project-root "$TMP_DIR" --passed 1 --total 1 >/dev/null 2>&1
 CMD="git -C \"$TMP_DIR\" commit --allow-empty -m 'test'"
@@ -105,7 +105,7 @@ setup_repo
 git -C "$TMP_DIR" checkout -b feature/test-tests -q
 BRANCH_TESTS="feature/test-tests"
 WF_TESTS="feature-test-tests"
-CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian:land" --project-root "$TMP_DIR" >/dev/null 2>&1
+CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" --project-root "$TMP_DIR" >/dev/null 2>&1
 CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
     test-state set fail --project-root "$TMP_DIR" --failed 3 --total 3 >/dev/null 2>&1
 CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
@@ -123,13 +123,13 @@ CMD="git -C \"$TMP_DIR\" commit --allow-empty -m 'test'"
 output=$(run_hook "$CMD")
 check_deny "sub-test 3 (test gate)" "$output" "test status is\|Tests must pass\|tests are failing\|test run did not pass"
 
-# --- Sub-test 4: git -C commit without evaluation clearance → Check 10 eval gate deny ---
-# A lease is issued (--no-eval) so Check 3 passes and Check 10 (no eval state) is the gate.
+# --- Sub-test 4: git -C commit without v6 landing readiness → v6 gate deny ---
+# A lease is issued (--no-eval) so Check 3 passes and v6_landing_readiness is the gate.
 setup_repo
 git -C "$TMP_DIR" checkout -b feature/test-proof -q
 BRANCH_PROOF="feature/test-proof"
 WF_PROOF="feature-test-proof"
-CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian:land" --project-root "$TMP_DIR" >/dev/null 2>&1
+CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" --project-root "$TMP_DIR" >/dev/null 2>&1
 CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
     test-state set pass --project-root "$TMP_DIR" --passed 1 --total 1 >/dev/null 2>&1
 CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
@@ -143,10 +143,10 @@ CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
     --branch "$BRANCH_PROOF" \
     --allowed-ops '["routine_local","high_risk"]' \
     --no-eval >/dev/null 2>&1
-# No evaluation_state set → status is "idle"
+# No v6_landing_readiness row exists.
 CMD="git -C \"$TMP_DIR\" commit --allow-empty -m 'test'"
 output=$(run_hook "$CMD")
-check_deny "sub-test 4 (eval gate)" "$output" "evaluation_state"
+check_deny "sub-test 4 (v6 landing gate)" "$output" "v6_landing_readiness"
 
 echo "PASS: $TEST_NAME (4 sub-tests)"
 exit 0

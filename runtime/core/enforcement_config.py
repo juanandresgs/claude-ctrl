@@ -13,25 +13,20 @@ Rationale: Before this module, enforcement toggles were scattered across
 Scope precedence (lookup order):
   workflow=<id>  →  project=<root>  →  global  →  None
 
-WHO gate: write authority is resolved via ``authority_registry.capabilities_for()``
-  and the ``CAN_SET_CONTROL_CONFIG`` capability. The authority registry
-  (DEC-CLAUDEX-AUTHORITY-REGISTRY-001) declares planner as the sole stage
-  carrying this capability — guardian stages (provision / land) do not carry it.
-  The sole exception is ``review_gate_regular_stop``: it is the legacy explicit
-  regular-Stop model review preference, so the orchestrator/user path (empty
-  actor_role) may write it directly. The default live Stop chain uses
-  deterministic ``hooks/stop-advisor.sh`` instead.
+WHO gate: guardian remains the writer for enforcement-sensitive toggles.
+  The sole exception is ``review_gate_regular_stop``: it is a user-facing
+  session-end preference, so the orchestrator/user path (empty actor_role)
+  may write it directly. This keeps the canonical authority in the runtime
+  without forcing plugin setup through a guardian lease.
 
-@decision DEC-REGULAR-STOP-REVIEW-001
-Title: Legacy regular Stop model review gate toggled via enforcement_config, not state.json
+@decision DEC-V6-NO-HIDDEN-STOP-001
+Title: Regular Stop review gate is explicit, not hidden default wiring
 Status: accepted
-Rationale: The codex plugin's state.json previously held stopReviewGate as
-  the sole authority for whether the regular-Stop review gate ran. Moving that
-  toggle into enforcement_config makes the runtime the canonical authority with
-  normal scope precedence semantics. DEC-STOP-ADVISOR-001 later removed broad
-  model review from the default regular Stop path, so this key is now only a
-  legacy explicit model-review preference. The plugin state.json is kept only
-  as a compatibility mirror during the deprecation window.
+Rationale: v6 review happens as first-order critic/reviewer stages, not as a
+  hidden long-running regular Stop hook. The optional regular Stop preference
+  remains in enforcement_config for explicit operator use, but its seeded
+  default is false and the plugin manifest does not auto-wire a Stop hook.
+  Dispatch/subagent safety review remains enabled through stage-machine gates.
 """
 
 from __future__ import annotations
@@ -39,11 +34,9 @@ from __future__ import annotations
 import sqlite3
 from typing import Optional
 
-from runtime.core.authority_registry import CAN_SET_CONTROL_CONFIG, capabilities_for
-
 
 class PermissionError(Exception):
-    """Raised when an actor without CAN_SET_CONTROL_CONFIG attempts to set a config value.
+    """Raised when a non-guardian actor attempts to set a config value.
 
     Named PermissionError (shadows the builtin in this module) so callers
     can catch it with a descriptive name. Import as
@@ -95,19 +88,18 @@ def set_(
 ) -> None:
     """Set a config value with the configured WHO gate.
 
-    Actors with CAN_SET_CONTROL_CONFIG may write enforcement-sensitive keys.
-    The sole exception is ``review_gate_regular_stop``, which may also be
-    written by the orchestrator/user path (empty actor_role) because it is a
-    legacy regular-Stop preference.
+    Guardian remains the writer for enforcement-sensitive keys. The sole
+    exception is ``review_gate_regular_stop``, which may also be written by
+    the orchestrator/user path (empty actor_role) because it is a user-facing
+    regular-Stop preference.
 
     Uses UPSERT so re-setting an existing key updates updated_at atomically.
     """
     if key == "review_gate_regular_stop" and (actor_role is None or actor_role == ""):
-        pass  # user-facing preference; orchestrator/user path exempt
-    elif CAN_SET_CONTROL_CONFIG not in capabilities_for(actor_role or ""):
+        pass
+    elif actor_role != "guardian":
         raise PermissionError(
-            f"Actor {actor_role!r} lacks {CAN_SET_CONTROL_CONFIG} capability "
-            f"(required to write enforcement_config)"
+            f"Only guardian role may set enforcement_config (got actor_role={actor_role!r})"
         )
     with conn:
         conn.execute(

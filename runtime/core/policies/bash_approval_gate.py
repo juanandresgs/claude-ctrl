@@ -1,9 +1,9 @@
-"""Policy: bash_approval_gate — require one-shot approval for guarded git ops.
+"""Policy: bash_approval_gate — require one-shot approval for high-risk git ops.
 
-Port of guard.sh lines 424-483 (Check 13), excluding straightforward push.
+Port of guard.sh lines 424-483 (Check 13).
 
 @decision DEC-PE-W3-011
-Title: bash_approval_gate uses effects to consume approval tokens for guarded ops
+Title: bash_approval_gate uses effects to consume approval tokens
 Status: accepted
 Rationale: approvals.check_and_consume() mutates the DB (consumes a token).
   Policies are pure functions and must not perform DB writes directly.
@@ -19,12 +19,6 @@ Rationale: approvals.check_and_consume() mutates the DB (consumes a token).
   classify_git_op() from leases.py is the canonical classifier (DEC-LEASE-002).
   We import it directly — no subprocess needed.
 
-  Straightforward `git push` is no longer approval-token gated. Guardian owns
-  push after reviewer/test/lease clearance; this policy now gates only the
-  remaining approval-token operations (rebase, reset, non-ff merge, direct
-  plumbing, and admin recovery). Force push and destructive git remain
-  hard-denied earlier in the stack.
-
   Guard.sh Checks 5-6 (hard denies for reset --hard, push --force, clean -f,
   branch -D) fire at priority 500-600, BEFORE this check at priority 1100.
   Those patterns cannot be approved via token — they are unconditional denies.
@@ -34,7 +28,6 @@ from __future__ import annotations
 
 from typing import Optional
 
-from runtime.core.leases import GitInvocation
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
 from runtime.core.policy_utils import (
     current_workflow_id,
@@ -43,30 +36,8 @@ from runtime.core.policy_utils import (
 )
 
 
-def _resolve_op_type_from_invocation(invocation: GitInvocation) -> Optional[str]:
-    if invocation.subcommand == "rebase":
-        return "rebase"
-    if invocation.subcommand == "merge" and "--abort" in invocation.args:
-        return "admin_recovery"
-    if invocation.subcommand == "reset" and "--merge" in invocation.args:
-        return "admin_recovery"
-    if invocation.subcommand == "reset":
-        return "reset"
-    if invocation.subcommand == "merge" and "--no-ff" in invocation.args:
-        return "non_ff_merge"
-    if invocation.subcommand in {
-        "commit-tree",
-        "update-ref",
-        "symbolic-ref",
-        "filter-branch",
-        "filter-repo",
-    }:
-        return "plumbing"
-    return None
-
-
 def _resolve_op_type(request: PolicyRequest | str) -> Optional[str]:
-    """Determine the approval op_type string for an approval-gated git command.
+    """Determine the approval op_type string for a high-risk or admin_recovery command.
 
     Accepts either a PolicyRequest (production path) or a raw command string
     (unit-test convenience / backwards compatibility).
@@ -77,15 +48,22 @@ def _resolve_op_type(request: PolicyRequest | str) -> Optional[str]:
         intent = build_bash_command_intent(request)
     else:
         intent = request.command_intent
-    if intent is None:
+    invocation = intent.git_invocation if intent is not None else None
+    if invocation is None:
         return None
-    for operation in intent.git_operations:
-        result = _resolve_op_type_from_invocation(operation.invocation)
-        if result is not None:
-            return result
-    invocation = intent.git_invocation
-    if invocation is not None:
-        return _resolve_op_type_from_invocation(invocation)
+
+    if invocation.subcommand == "push":
+        return "push"
+    if invocation.subcommand == "rebase":
+        return "rebase"
+    if invocation.subcommand == "merge" and "--abort" in invocation.args:
+        return "admin_recovery"
+    if invocation.subcommand == "reset" and "--merge" in invocation.args:
+        return "admin_recovery"
+    if invocation.subcommand == "reset":
+        return "reset"
+    if invocation.subcommand == "merge" and "--no-ff" in invocation.args:
+        return "non_ff_merge"
     return None
 
 
@@ -104,35 +82,15 @@ def _resolve_workflow_id(request: PolicyRequest) -> str:
     return current_workflow_id(request.context.project_root or "")
 
 
-def _work_item_allows_non_ff_autoland(request: PolicyRequest) -> bool:
-    grant = request.context.landing_grant or {}
-    if not isinstance(grant, dict):
-        return False
-    required_raw = grant.get("requires_user_approval") or []
-    if isinstance(required_raw, str):
-        required = {required_raw}
-    else:
-        try:
-            required = set(required_raw)
-        except TypeError:
-            required = set()
-    return (
-        bool(grant.get("can_autoland"))
-        and str(grant.get("merge_strategy") or "") == "no_ff"
-        and "non_ff_merge" not in required
-    )
-
-
 def check(request: PolicyRequest) -> Optional[PolicyDecision]:
-    """Require a one-shot approval token for approval-gated git ops.
+    """Require a one-shot approval token for high-risk and admin_recovery git ops.
 
     Classification (via classify_git_op from leases.py):
-      high_risk      → rebase, reset (any), merge --no-ff, direct plumbing
+      high_risk      → push, rebase, reset (any), merge --no-ff
       admin_recovery → merge --abort, reset --merge
 
-    Routine Guardian landing ops (commit, plain merge, straightforward push)
-    are gated by eval_readiness / landing authority — no approval token needed
-    here.
+    Routine local ops (commit, plain merge) are gated by eval_readiness
+    (priority=900) — no approval token needed here.
 
     Hard denies (reset --hard, push --force, clean -f, branch -D) are handled
     by bash_destructive_git (priority=600) and bash_force_push (priority=500)
@@ -144,22 +102,16 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     if intent is None:
         return None
 
-    git_operations = tuple(op for op in intent.git_operations if op.op_class in ("high_risk", "admin_recovery"))
-    if not git_operations:
+    invocation = intent.git_invocation
+    if invocation is None:
         return None
 
-    gated: tuple[str, str] | None = None
-    for operation in git_operations:
-        op_type = _resolve_op_type_from_invocation(operation.invocation)
-        if op_type:
-            gated = (op_type, operation.op_class)
-            break
-    if gated is None:
+    op_class = intent.git_op_class
+    if op_class not in ("high_risk", "admin_recovery"):
         return None
 
-    op_type, op_class = gated
-
-    if op_type == "non_ff_merge" and _work_item_allows_non_ff_autoland(request):
+    op_type = _resolve_op_type(request)
+    if not op_type:
         return None
 
     workflow_id = _resolve_workflow_id(request)
@@ -168,6 +120,16 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     # build_context() does not pre-load approval tokens — they are stateful
     # and consumption is a write. We signal consumption via effects and
     # require the CLI handler to validate + consume atomically.
+    #
+    # The policy checks the approval via effects rather than querying the DB.
+    # This means we must trust the CLI handler to do the consumption.
+    # We return action="deny" with effects={"check_and_consume_approval": ...}
+    # so the CLI handler can:
+    #   1. Call approvals.check_and_consume(conn, workflow_id, op_type)
+    #   2. If True: override the deny to allow.
+    #   3. If False: emit the deny reason.
+    #
+    # This is the cleanest pure-function approach given the constraints.
     return PolicyDecision(
         action="deny",
         reason=(

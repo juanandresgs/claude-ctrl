@@ -56,7 +56,7 @@ _setup() {
     CURRENT_HEAD=$(git -C "$TMP_DIR" rev-parse HEAD)
 
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
-    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian:land" --project-root "$TMP_DIR" >/dev/null 2>&1
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" >/dev/null 2>&1
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
         test-state set pass --project-root "$TMP_DIR" --passed 1 --total 1 >/dev/null 2>&1
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
@@ -136,8 +136,8 @@ run_sub_case_c() {
     _setup "$branch"
     trap '_teardown' RETURN
 
-    # Create a second branch to merge from. Check 3 denies before merge-source
-    # workflow/evaluation state is consulted.
+    # Create a second branch to merge from. No DB readiness is needed because
+    # the no-lease gate must deny before any landing-readiness logic.
     (cd "$TMP_DIR" && git checkout -b "feature/merge-source" -q && git commit --allow-empty -m "src" -q)
     (cd "$TMP_DIR" && git checkout "$branch" -q)
 

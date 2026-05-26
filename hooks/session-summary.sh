@@ -13,7 +13,6 @@ source "$(dirname "$0")/log.sh"
 source "$(dirname "$0")/context-lib.sh"
 
 HOOK_INPUT=$(read_input)
-seed_project_dir_from_hook_payload_cwd "$HOOK_INPUT"
 
 # Prevent re-firing loops
 STOP_ACTIVE=$(echo "$HOOK_INPUT" | jq -r '.stop_hook_active // false' 2>/dev/null)
@@ -25,20 +24,20 @@ PROJECT_ROOT=$(detect_project_root)
 
 # Find session tracking file
 get_session_changes "$PROJECT_ROOT"
-CHANGES_TEXT="${SESSION_CHANGES_TEXT:-}"
+CHANGES="${SESSION_FILE:-}"
 
-# No tracked changes → no summary needed
-if [[ -z "$CHANGES_TEXT" ]]; then
+# No tracking file → no summary needed
+if [[ -z "$CHANGES" || ! -f "$CHANGES" ]]; then
     exit 0
 fi
 
-# Count unique files changed
-TOTAL_FILES=$(printf '%s\n' "$CHANGES_TEXT" | sort -u | wc -l | tr -d ' ') || TOTAL_FILES=0
+# Count unique files changed (guard against empty file)
+TOTAL_FILES=$(sort -u "$CHANGES" 2>/dev/null | wc -l | tr -d ' ') || TOTAL_FILES=0
 [[ "$TOTAL_FILES" -eq 0 ]] && exit 0
 
 # Count source vs non-source
-SOURCE_EXTS="($SOURCE_EXTENSIONS)"
-SOURCE_COUNT=$(printf '%s\n' "$CHANGES_TEXT" | sort -u | grep -cE "\\.${SOURCE_EXTS}$") || SOURCE_COUNT=0
+SOURCE_EXTS='(ts|tsx|js|jsx|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|sh|bash|zsh)'
+SOURCE_COUNT=$(sort -u "$CHANGES" 2>/dev/null | grep -cE "\\.${SOURCE_EXTS}$") || SOURCE_COUNT=0
 CONFIG_COUNT=$(( TOTAL_FILES - SOURCE_COUNT ))
 
 # Check for @decision annotations added this session
@@ -49,7 +48,7 @@ while IFS= read -r file; do
     if grep -qE "$DECISION_PATTERN" "$file" 2>/dev/null; then
         ((DECISIONS_ADDED++)) || true
     fi
-done < <(printf '%s\n' "$CHANGES_TEXT" | sort -u)
+done < <(sort -u "$CHANGES" 2>/dev/null)
 
 # Build summary (3-4 lines max)
 SUMMARY="Session: $TOTAL_FILES file(s) changed"
@@ -64,23 +63,40 @@ fi
 get_git_state "$PROJECT_ROOT"
 get_plan_status "$PROJECT_ROOT"
 
-# Test status from state.db. Wait briefly for async test-runner if a Write/Edit
-# triggered it just before the model finished.
+# Test status from test-runner.sh (format: "result|fail_count|timestamp")
+# Staleness guard: treat .test-status older than 30 minutes as unknown.
+# Without this, a days-old "pass" could mislead into suggesting "commit"
+# when tests haven't been run this session.
+#
+# Wait loop: test-runner.sh runs async (PostToolUse). If a Write/Edit triggered
+# it just before the model finished, .test-status may not exist yet. Wait briefly
+# if test-runner is still running so we can capture the result rather than report
+# "not run" while tests are actually in-flight.
 TEST_RESULT="unknown"
 TEST_FAILS=0
+TEST_STATUS_FILE="${PROJECT_ROOT}/.claude/.test-status"
+STALENESS_THRESHOLD=1800  # 30 minutes in seconds
 
 # Brief wait for async test-runner if it's still running
-if pgrep -f "test-runner\\.sh" >/dev/null 2>&1; then
+if [[ ! -f "$TEST_STATUS_FILE" ]] && pgrep -f "test-runner\\.sh" >/dev/null 2>&1; then
     for _i in 1 2 3; do
         sleep 1
-        ! pgrep -f "test-runner\\.sh" >/dev/null 2>&1 && break
+        [[ -f "$TEST_STATUS_FILE" ]] && break
     done
+    # If still no file but process finished, give one more beat
+    if [[ ! -f "$TEST_STATUS_FILE" ]] && ! pgrep -f "test-runner\\.sh" >/dev/null 2>&1; then
+        sleep 0.5
+    fi
 fi
 
-TEST_STATE_JSON=$(rt_test_state_get "$PROJECT_ROOT" 2>/dev/null || echo '{"found":false}')
-if [[ "$(printf '%s' "$TEST_STATE_JSON" | jq -r '.found // false' 2>/dev/null || echo "false")" == "true" ]]; then
-    TEST_RESULT=$(printf '%s' "$TEST_STATE_JSON" | jq -r '.status // "unknown"' 2>/dev/null || echo "unknown")
-    TEST_FAILS=$(printf '%s' "$TEST_STATE_JSON" | jq -r '.fail_count // 0' 2>/dev/null || echo "0")
+if [[ -f "$TEST_STATUS_FILE" ]]; then
+    FILE_MOD=$(stat -f '%m' "$TEST_STATUS_FILE" 2>/dev/null || stat -c '%Y' "$TEST_STATUS_FILE" 2>/dev/null || echo "0")
+    NOW=$(date +%s)
+    FILE_AGE=$(( NOW - FILE_MOD ))
+    if [[ "$FILE_AGE" -le "$STALENESS_THRESHOLD" ]]; then
+        TEST_RESULT=$(cut -d'|' -f1 "$TEST_STATUS_FILE")
+        TEST_FAILS=$(cut -d'|' -f2 "$TEST_STATUS_FILE")
+    fi
 fi
 
 # Git line: branch + dirty/clean + test status
@@ -117,9 +133,9 @@ else
     elif [[ "$TEST_RESULT" != "pass" ]]; then
         NEXT_ACTION="Run tests to verify implementation before committing."
     elif [[ "$GIT_DIRTY_COUNT" -gt 0 ]]; then
-        NEXT_ACTION="Dispatch Reviewer for evaluation. Guardian can commit when the Reviewer issues REVIEW_VERDICT=ready_for_guardian."
+        NEXT_ACTION="Dispatch reviewer for readiness. Guardian can land source changes when v6_landing_readiness is ready."
     else
-        NEXT_ACTION="If the reviewer completion verdict is ready_for_guardian, use Guardian to merge or commit. Otherwise dispatch Reviewer first."
+        NEXT_ACTION="If v6_landing_readiness is ready, use Guardian to merge or commit. Otherwise dispatch reviewer first."
     fi
 fi
 

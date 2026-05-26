@@ -128,19 +128,18 @@ get_session_changes() {
     local root="$1"
     SESSION_CHANGED_COUNT=0
     SESSION_FILE=""
-    SESSION_CHANGES_TEXT=""
-    SESSION_CHANGES_JSON='{"items":[],"count":0}'
 
     local session_id
     session_id=$(canonical_session_id)
-    [[ -n "$session_id" ]] || return 0
+    if [[ -n "$session_id" && -f "$root/.claude/.session-changes-${session_id}" ]]; then
+        SESSION_FILE="$root/.claude/.session-changes-${session_id}"
+    elif [[ -f "$root/.claude/.session-changes" ]]; then
+        SESSION_FILE="$root/.claude/.session-changes"
+    fi
 
-    SESSION_CHANGES_JSON=$(cc_policy session-activity change-list \
-        --project-root "$root" \
-        --session-id "$session_id" 2>/dev/null || echo '{"items":[],"count":0}')
-    SESSION_CHANGED_COUNT=$(printf '%s' "$SESSION_CHANGES_JSON" | jq -r '.count // 0' 2>/dev/null || echo "0")
-    [[ "$SESSION_CHANGED_COUNT" =~ ^[0-9]+$ ]] || SESSION_CHANGED_COUNT=0
-    SESSION_CHANGES_TEXT=$(printf '%s' "$SESSION_CHANGES_JSON" | jq -r '.items[]?.file_path // empty' 2>/dev/null || true)
+    if [[ -n "$SESSION_FILE" && -f "$SESSION_FILE" ]]; then
+        SESSION_CHANGED_COUNT=$(sort -u "$SESSION_FILE" | wc -l | tr -d ' ')
+    fi
 }
 
 # --- Research log status ---
@@ -162,7 +161,7 @@ get_research_status() {
 # Single source of truth for source file extensions across all hooks.
 # DECISION: Consolidated extension list. Rationale: Source file regex was
 # copy-pasted in 8+ hooks creating drift risk. Status: accepted.
-SOURCE_EXTENSIONS='ts|tsx|js|jsx|mjs|cjs|mts|cts|astro|vue|svelte|css|scss|sass|less|html|htm|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|sh|bash|zsh'
+SOURCE_EXTENSIONS='ts|tsx|js|jsx|mjs|cjs|mts|cts|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|sh|bash|zsh'
 
 # Check if a file is a source file by extension
 is_source_file() {
@@ -170,178 +169,14 @@ is_source_file() {
     [[ "$file" =~ \.($SOURCE_EXTENSIONS)$ ]]
 }
 
-# Check if a file should be skipped (generated, vendor/build output).
-# Config and test files are source for governance/write authority.
+# Check if a file should be skipped (test, config, generated, vendor)
 is_skippable_path() {
     local file="$1"
-    # Skip generated/minified files
-    [[ "$file" =~ (\.generated\.|\.min\.) ]] && return 0
+    # Skip config files, test files, generated files
+    [[ "$file" =~ (\.config\.|\.test\.|\.spec\.|__tests__|\.generated\.|\.min\.) ]] && return 0
     # Skip vendor/build directories
-    [[ "$file" =~ (^|/)(node_modules|vendor|dist|build|\.next|__pycache__|\.git)(/|$) ]] && return 0
+    [[ "$file" =~ (node_modules|vendor|dist|build|\.next|__pycache__|\.git) ]] && return 0
     return 1
-}
-
-_SCRATCHLANE_PATH_CACHE_ROOT=""
-_SCRATCHLANE_PATH_CACHE=""
-
-is_scratchlane_path() {
-    local file="$1"
-    [[ -n "$file" ]] || return 1
-
-    local root="${PROJECT_ROOT:-}"
-    if [[ -z "$root" ]]; then
-        root=$(detect_project_root 2>/dev/null || true)
-    fi
-    [[ -n "$root" && -d "$root" ]] || return 1
-
-    local abs="$file"
-    if [[ "$abs" != /* ]]; then
-        abs="$root/$abs"
-    fi
-
-    local parent base
-    parent=$(dirname "$abs")
-    base=$(basename "$abs")
-    if [[ -d "$parent" ]]; then
-        parent=$(cd "$parent" 2>/dev/null && pwd -P) || return 1
-        abs="$parent/$base"
-    fi
-
-    if [[ "${_SCRATCHLANE_PATH_CACHE_ROOT:-}" != "$root" ]]; then
-        _SCRATCHLANE_PATH_CACHE_ROOT="$root"
-        _SCRATCHLANE_PATH_CACHE=$(cc_policy scratchlane list --project-root "$root" 2>/dev/null \
-            | jq -r '.items[]?.root_path // empty' 2>/dev/null) || _SCRATCHLANE_PATH_CACHE=""
-    fi
-
-    local scratch_root
-    while IFS= read -r scratch_root; do
-        [[ -n "$scratch_root" ]] || continue
-        if [[ -d "$scratch_root" ]]; then
-            scratch_root=$(cd "$scratch_root" 2>/dev/null && pwd -P) || continue
-        fi
-        [[ "$abs" == "$scratch_root" || "$abs" == "$scratch_root/"* ]] && return 0
-    done <<< "$_SCRATCHLANE_PATH_CACHE"
-
-    return 1
-}
-
-# --- Source mutation fingerprint (DEC-EVAL-006) ---
-# Content-aware hash of all source-file mutations relative to HEAD.
-# Used by pre/post-bash hooks to detect per-command source changes.
-# Returns a sha256 hash of "path:content_hash" pairs for all source files
-# that differ from HEAD. The hash changes when file content changes, not
-# just when path presence changes — this prevents false invalidation from
-# pre-existing staged changes.
-compute_source_fingerprint() {
-    local root="$1"
-    local _csf_data=""
-    local _csf_files
-    _csf_files=$(
-        {
-            git -C "$root" diff --name-only HEAD 2>/dev/null || true
-            git -C "$root" ls-files --others --exclude-standard 2>/dev/null || true
-        } | sort -u
-    )
-    while IFS= read -r _csf_f; do
-        [[ -z "$_csf_f" ]] && continue
-        if is_source_file "$_csf_f" && ! is_skippable_path "$_csf_f" && ! is_scratchlane_path "$_csf_f"; then
-            local _csf_abs="$root/$_csf_f"
-            local _csf_h
-            if [[ -f "$_csf_abs" ]]; then
-                _csf_h=$( (shasum -a 256 "$_csf_abs" 2>/dev/null || sha256sum "$_csf_abs" 2>/dev/null) | cut -d' ' -f1 )
-            else
-                _csf_h="DELETED"
-            fi
-            _csf_data+="${_csf_f}:${_csf_h}"$'\n'
-        fi
-    done <<< "$_csf_files"
-    if [[ -z "$_csf_data" ]]; then
-        echo "EMPTY"
-        return
-    fi
-    printf '%s' "$_csf_data" | shasum -a 256 2>/dev/null | cut -d' ' -f1 \
-        || printf '%s' "$_csf_data" | sha256sum 2>/dev/null | cut -d' ' -f1 \
-        || echo "NOHASH"
-}
-
-# Resolve the command target for Bash hook payloads through the runtime-owned
-# parser. Hooks use this for non-enforcement bookkeeping only; PreToolUse policy
-# decisions still come from cc-policy evaluate.
-bash_payload_intent_context() {
-    local payload="${1:-}"
-    [[ -n "$payload" ]] || payload="${HOOK_INPUT:-}"
-    [[ -n "$payload" ]] || { printf '{}\n'; return 0; }
-
-    printf '%s' "$payload" \
-        | cc_policy hook envelope 2>/dev/null \
-        | jq '{target_cwd: (.envelope.target_cwd // ""),
-               project_root: (.envelope.project_root // ""),
-               git_operations: (.envelope.git_operations // [])}' 2>/dev/null \
-        || printf '{}\n'
-}
-
-bash_payload_project_root() {
-    local payload="${1:-}"
-    local ctx
-    ctx=$(bash_payload_intent_context "$payload" 2>/dev/null || echo '{}')
-    printf '%s' "$ctx" | jq -r '.project_root // empty' 2>/dev/null || true
-}
-
-hook_payload_project_root() {
-    local payload="${1:-}"
-    local ctx
-    [[ -n "$payload" ]] || payload="${HOOK_INPUT:-}"
-    [[ -n "$payload" ]] || return 0
-    ctx=$(printf '%s' "$payload" | cc_policy hook envelope 2>/dev/null || echo '{}')
-    printf '%s' "$ctx" | jq -r '.envelope.project_root // empty' 2>/dev/null || true
-}
-
-bash_payload_has_git_subcommand() {
-    local payload="${1:-}" subcommand="${2:-}"
-    local ctx
-    [[ -n "$subcommand" ]] || return 1
-    ctx=$(bash_payload_intent_context "$payload" 2>/dev/null || echo '{}')
-    printf '%s' "$ctx" \
-        | jq -e --arg subcommand "$subcommand" \
-            '.git_operations[]? | select(.subcommand == $subcommand)' >/dev/null 2>&1
-}
-
-agent_response_text() {
-    local payload="${1:-}"
-    [[ -n "$payload" ]] || payload="${HOOK_INPUT:-}"
-    [[ -n "$payload" ]] || return 0
-
-    local direct
-    direct=$(printf '%s' "$payload" \
-        | jq -r '.last_assistant_message // .assistant_response // .response // .result // .output // empty' 2>/dev/null \
-        || echo "")
-    if [[ -n "$direct" && "$direct" != "null" ]]; then
-        printf '%s\n' "$direct"
-        return 0
-    fi
-
-    local transcript
-    transcript=$(printf '%s' "$payload" \
-        | jq -r '.agent_transcript_path // .transcript_path // empty' 2>/dev/null \
-        || echo "")
-    [[ -n "$transcript" && -r "$transcript" ]] || return 0
-
-    # Real SubagentStop payloads may only include agent_transcript_path.
-    # Pull the latest assistant text block from the transcript so role
-    # completion trailers still submit without the agent calling the CLI by hand.
-    tail -n 400 "$transcript" 2>/dev/null \
-        | jq -r -s '
-            [
-              .[]
-              | select(.type == "assistant")
-              | (.message.content // [])
-              | map(select(.type == "text") | .text)
-              | join("\n")
-              | select(length > 0)
-            ]
-            | last // ""
-        ' 2>/dev/null \
-        || true
 }
 
 # --- Audit trail ---
@@ -598,7 +433,7 @@ is_claude_meta_repo() {
 # @decision DEC-WF-003
 # @title get_workflow_binding is the canonical worktree identity lookup
 # @status accepted
-# @rationale Later roles (reviewer, guardian) must read the worktree path from
+# @rationale Later roles (tester, guardian) must read the worktree path from
 #   the runtime binding rather than inferring from CWD or git state. This
 #   function is the single canonical entry point. It derives workflow_id via
 #   current_workflow_id (branch-based), queries the runtime for the
@@ -705,11 +540,9 @@ lease_context() {
 #   Python policy engine and false-positive matched quoted prompt text. This
 #   shell wrapper now delegates to the canonical Python parser so hook and
 #   policy-engine enforcement classify the same command the same way.
-#   routine_local:  evaluation_state gates these (Check 10). high_risk: Guardian
-#   lease/capability gate; selected high_risk ops (rebase/reset/non-ff merge)
-#   also require approval tokens (Check 13). admin_recovery: merge --abort and
-#   reset --merge require lease + approval but NOT evaluation readiness
-#   (DEC-LEASE-002).
+#   routine_local:  evaluation_state gates these (Check 10). high_risk: approval
+#   token required (Check 13). admin_recovery: merge --abort and reset --merge
+#   require lease + approval but NOT evaluation readiness (DEC-LEASE-002).
 #   unclassified: not a git op of interest.
 #
 # Classification precedence (first match wins):
@@ -733,5 +566,5 @@ print(classify_git_op(sys.argv[1]))
 
 # Export for subshells
 export SOURCE_EXTENSIONS
-export -f cc_policy _rt_ensure_schema rt_marker_get_active rt_marker_get_active_role rt_marker_set rt_marker_deactivate rt_event_emit rt_workflow_bind rt_workflow_get rt_workflow_scope_check rt_eval_get rt_eval_set rt_eval_list rt_eval_invalidate rt_approval_grant rt_approval_check rt_lease_validate_op rt_lease_current rt_lease_claim rt_lease_release rt_lease_expire_stale rt_completion_submit rt_completion_latest rt_completion_route rt_obs_metric rt_obs_metric_batch _obs_accum
-export -f get_git_state get_plan_status get_session_changes get_research_status is_source_file is_skippable_path is_scratchlane_path compute_source_fingerprint bash_payload_intent_context bash_payload_project_root hook_payload_project_root bash_payload_has_git_subcommand agent_response_text append_audit canonical_session_id sanitize_token current_workflow_id file_mtime read_evaluation_status read_evaluation_state write_evaluation_status find_worktree_for_branch current_active_agent_role is_guardian_role is_claude_meta_repo get_workflow_binding classify_git_op lease_context
+export -f cc_policy _rt_ensure_schema rt_marker_get_active_role rt_marker_set rt_marker_deactivate rt_event_emit rt_workflow_bind rt_workflow_get rt_workflow_scope_check rt_eval_get rt_eval_set rt_eval_list rt_eval_invalidate rt_approval_grant rt_approval_check rt_lease_validate_op rt_lease_current rt_lease_claim rt_lease_release rt_lease_expire_stale rt_completion_submit rt_completion_latest rt_completion_route rt_obs_metric rt_obs_metric_batch _obs_accum
+export -f get_git_state get_plan_status get_session_changes get_research_status is_source_file is_skippable_path append_audit canonical_session_id sanitize_token current_workflow_id file_mtime read_evaluation_status read_evaluation_state write_evaluation_status find_worktree_for_branch current_active_agent_role is_guardian_role is_claude_meta_repo get_workflow_binding classify_git_op lease_context

@@ -30,7 +30,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # because plan-check.sh skips files in .claude/ meta-infrastructure.
 # This worktree lives at .claude/worktrees/feature-tkt-017, so we must anchor
 # the temp repos at the project root above .claude/ to get clean paths.
-PROJECT_ROOT="$(cd "$REPO_ROOT/../../.." && pwd)"
+PROJECT_ROOT="$REPO_ROOT"
 TMP_BASE="$PROJECT_ROOT/tmp/test-worktree-hook-$$"
 PASS=0
 FAIL=0
@@ -59,7 +59,7 @@ set_worktree_role() {
     local worktree_path="$1" role="$2"
     local db="$worktree_path/.claude/state.db"
     CLAUDE_POLICY_DB="$db" python3 "$REPO_ROOT/runtime/cli.py" schema ensure >/dev/null 2>&1
-    CLAUDE_POLICY_DB="$db" python3 "$REPO_ROOT/runtime/cli.py" marker set "agent-test" "$role" >/dev/null 2>&1
+    CLAUDE_POLICY_DB="$db" python3 "$REPO_ROOT/runtime/cli.py" marker set "agent-test" "$role" --project-root "$worktree_path" >/dev/null 2>&1
 }
 
 # --- Setup: real git repo + worktree ---

@@ -222,10 +222,10 @@ SI_OUT=$(printf '%s' "$SI_PAYLOAD" \
 
 printf '  [debug] session-init output: %s\n' "$(printf '%s' "$SI_OUT" | head -c 200)"
 
-if printf '%s' "$SI_OUT" | jq '.' >/dev/null 2>&1; then
-    pass "session-init produced valid JSON with active lease"
+if printf '%s' "$SI_OUT" | jq -s -e 'length == 1 and .[0].hookSpecificOutput.hookEventName == "SessionStart"' >/dev/null 2>&1; then
+    pass "session-init produced exactly one JSON object with active lease"
 else
-    fail "session-init produced valid JSON with active lease (got: $SI_OUT)"
+    fail "session-init produced exactly one JSON object with active lease (got: $SI_OUT)"
 fi
 
 # Expire the lease and run again — should not crash
@@ -233,10 +233,10 @@ $CC lease expire-stale >/dev/null 2>&1 || true
 SI_OUT2=$(printf '%s' "$SI_PAYLOAD" \
     | CLAUDE_PROJECT_DIR="$TMP_GIT" CLAUDE_POLICY_DB="$TEST_DB" "$SESSION_INIT" 2>/dev/null || true)
 
-if printf '%s' "$SI_OUT2" | jq '.' >/dev/null 2>&1; then
-    pass "session-init produced valid JSON without active lease (fallback path)"
+if printf '%s' "$SI_OUT2" | jq -s -e 'length == 1 and .[0].hookSpecificOutput.hookEventName == "SessionStart"' >/dev/null 2>&1; then
+    pass "session-init produced exactly one JSON object without active lease (fallback path)"
 else
-    fail "session-init produced valid JSON without active lease (got: $SI_OUT2)"
+    fail "session-init produced exactly one JSON object without active lease (got: $SI_OUT2)"
 fi
 
 # ---------------------------------------------------------------------------

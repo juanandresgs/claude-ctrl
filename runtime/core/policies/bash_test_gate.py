@@ -21,8 +21,8 @@ from __future__ import annotations
 
 from typing import Optional
 
-from runtime.core.landing_authority import is_branch_checkpoint_commit
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
+from runtime.core.policies.fast_path import guarded_non_source_commit
 
 _PASS_STATUSES = frozenset({"pass", "pass_complete"})
 
@@ -49,18 +49,19 @@ def check_merge(request: PolicyRequest) -> Optional[PolicyDecision]:
     if intent is None:
         return None
 
-    merge_invocations = [
-        op.invocation for op in intent.git_operations if op.invocation.subcommand == "merge"
-    ]
-    if not merge_invocations:
+    invocation = intent.git_invocation
+    if invocation is None or invocation.subcommand != "merge":
         return None
 
     # Admin recovery exemption.
-    if all("--abort" in invocation.args for invocation in merge_invocations):
+    if "--abort" in invocation.args:
         return None
 
     # Meta-repo bypass.
     if request.context.is_meta_repo:
+        return None
+
+    if guarded_non_source_commit(request).eligible:
         return None
 
     ok, status = _test_state_ok(request)
@@ -95,18 +96,15 @@ def check_commit(request: PolicyRequest) -> Optional[PolicyDecision]:
     if intent is None:
         return None
 
-    commit_invocations = [
-        op.invocation for op in intent.git_operations if op.invocation.subcommand == "commit"
-    ]
-    if not commit_invocations:
+    invocation = intent.git_invocation
+    if invocation is None or invocation.subcommand != "commit":
         return None
 
     # Meta-repo bypass.
     if request.context.is_meta_repo:
         return None
 
-    target_dir = request.context.project_root or request.cwd or ""
-    if is_branch_checkpoint_commit(request.context, target_dir):
+    if guarded_non_source_commit(request).eligible:
         return None
 
     ok, status = _test_state_ok(request)

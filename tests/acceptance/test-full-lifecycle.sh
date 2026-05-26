@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# test-full-lifecycle.sh — Simulates a complete planner->guardian(provision)
-# ->implementer->reviewer->guardian dispatch cycle and verifies every
-# enforcement point along the way.
+# test-full-lifecycle.sh — Simulates a complete planner->implementer->tester
+# ->guardian dispatch cycle and verifies every enforcement point along the way.
 #
 # Production sequence exercised:
 #   1. Setup: temp project with git repo and MASTER_PLAN.md
@@ -9,22 +8,22 @@
 #       - Set marker role=planner
 #       - Source write: DENIED (planner cannot write source)
 #       - Governance write (MASTER_PLAN.md): ALLOWED
-#       - post-task.sh fired with agent_type=planner -> guardian suggested
+#       - post-task.sh fired with agent_type=planner -> implementer enqueued
 #   3. Implementer phase:
 #       - Set marker role=implementer
 #       - Source write: ALLOWED
 #       - Governance write: DENIED
-#       - post-task.sh fired with agent_type=implementer -> reviewer enqueued
-#   4. Reviewer phase (Phase 8 Slice 11: reviewer replaces retired tester):
-#       - Set marker role=reviewer
-#       - Source write: DENIED (read-only stage)
-#       - post-task.sh fired with agent_type=reviewer -> guardian enqueued
-#   5. Guardian landing phase:
+#       - post-task.sh fired with agent_type=implementer -> tester enqueued
+#   4. Tester phase:
+#       - Set marker role=tester
+#       - Source write: DENIED
+#       - post-task.sh fired with agent_type=tester -> guardian enqueued
+#   5. Guardian phase:
 #       - Set marker role=guardian
-#       - Set evaluation_state=ready_for_guardian, test-status=pass
+#       - Set proof=verified, test-status=pass
 #       - Git op: ALLOWED
 #       - post-task.sh fired with agent_type=guardian -> cycle complete
-#   6. Verify completion records and events reflect the current routing authority
+#   6. Verify dispatch queue progressed: planner->implementer->tester->guardian
 #   7. Verify events recorded for each agent_complete
 #   8. Cleanup
 #
@@ -32,13 +31,11 @@
 # @title Full lifecycle test exercises the complete dispatch cycle end-to-end
 # @status accepted
 # @rationale The production system is a state machine: planner->implementer->
-#   guardian(provision)->implementer->reviewer->guardian. Phase 8 Slice 11 retired the legacy ``tester`` role;
-#   the reviewer is the live read-only evaluator after Slice 11. Unit tests
-#   and matrix tests verify individual cells. The lifecycle test verifies the
-#   transitions: that each phase correctly denies what it should, produces the
-#   right dispatch suggestion, and leaves the runtime in the correct state for
-#   the next phase. This is the compound interaction test that crosses all
-#   component boundaries.
+#   tester->guardian. Unit tests and matrix tests verify individual cells.
+#   The lifecycle test verifies the transitions: that each phase correctly
+#   denies what it should, produces the right dispatch suggestion, and leaves
+#   the runtime in the correct state for the next phase. This is the compound
+#   interaction test that crosses all component boundaries.
 #
 # Usage:  bash tests/acceptance/test-full-lifecycle.sh
 # Exit:   0 all pass, 1 any fail
@@ -77,7 +74,7 @@ WORKFLOW_ID="feature-lifecycle-test"
 
 # cc-policy helper scoped to test DB
 policy() {
-    CLAUDE_PROJECT_DIR="$TMP_DIR" CLAUDE_POLICY_DB="$TEST_DB" PYTHONPATH="$REPO_ROOT" python3 "$CLI" "$@"
+    CLAUDE_POLICY_DB="$TEST_DB" PYTHONPATH="$REPO_ROOT" python3 "$CLI" "$@"
 }
 
 # Run hook with CLAUDE_PROJECT_DIR and CLAUDE_POLICY_DB scoped to temp project
@@ -109,46 +106,10 @@ set_role() {
     # role is empty (simulates the no-role / orchestrator state).
     local role="$1"
     if [[ -n "$role" ]]; then
-        policy marker set "agent-test" "$role" --project-root "$TMP_DIR" >/dev/null 2>&1
+        policy marker set "agent-test" "$role" >/dev/null 2>&1
     else
         policy marker deactivate "agent-test" >/dev/null 2>&1 || true
     fi
-}
-
-seed_planner_completion() {
-    PYTHONPATH="$REPO_ROOT" python3 - "$TEST_DB" "$TMP_DIR" "$WORKFLOW_ID" <<'PYEOF'
-import sqlite3, sys
-from runtime.core import completions, decision_work_registry as dwr, leases
-from runtime.schemas import ensure_schema
-
-db_path, project_root, workflow_id = sys.argv[1], sys.argv[2], sys.argv[3]
-conn = sqlite3.connect(db_path)
-conn.row_factory = sqlite3.Row
-ensure_schema(conn)
-dwr.insert_goal(
-    conn,
-    dwr.GoalRecord(
-        goal_id=workflow_id,
-        desired_end_state="Lifecycle acceptance goal",
-        status="active",
-        autonomy_budget=5,
-    ),
-)
-lease = leases.issue(
-    conn,
-    role="planner",
-    workflow_id=workflow_id,
-    worktree_path=project_root,
-)
-completions.submit(
-    conn,
-    lease_id=lease["lease_id"],
-    workflow_id=workflow_id,
-    role="planner",
-    payload={"PLAN_VERDICT": "next_work_item", "PLAN_SUMMARY": "lifecycle acceptance"},
-)
-conn.close()
-PYEOF
 }
 
 assert_deny() {
@@ -228,9 +189,8 @@ assert_allow "planner: governance write allowed" "$out"
 out=$(run_guard "$GIT_PAYLOAD")
 assert_deny  "planner: git op denied"            "$out"
 
-seed_planner_completion
 post=$(run_post_task "planner")
-assert_contains "planner post-task: suggests guardian" "$post" "guardian"
+assert_contains "planner post-task: suggests implementer" "$post" "implementer"
 
 # ---------------------------------------------------------------------------
 # Phase 3: implementer
@@ -248,48 +208,42 @@ out=$(run_guard "$GIT_PAYLOAD")
 assert_deny  "implementer: git op denied"           "$out"
 
 post=$(run_post_task "implementer")
-assert_contains "implementer post-task: suggests reviewer" "$post" "reviewer"
+assert_contains "implementer post-task: suggests tester" "$post" "tester"
 
 # ---------------------------------------------------------------------------
-# Phase 4: reviewer — issue lease + submit completion record so post-task routes
-# (Phase 8 Slice 11 retired ``tester``; reviewer is the live read-only evaluator.)
+# Phase 4: tester — issue lease + submit completion record so post-task routes
 # ---------------------------------------------------------------------------
-printf '\n-- Phase: reviewer\n'
-set_role "reviewer"
+printf '\n-- Phase: tester\n'
+set_role "tester"
 
 out=$(run_pre_write "$SOURCE_PAYLOAD")
-assert_deny  "reviewer: source write denied"    "$out"
+assert_deny  "tester: source write denied"    "$out"
 
 out=$(run_guard "$GIT_PAYLOAD")
-assert_deny  "reviewer: git op denied"          "$out"
+assert_deny  "tester: git op denied"          "$out"
 
-# A3: all git ops require a lease. post-task.sh reads the active reviewer lease
+# A3: all git ops require a lease. post-task.sh reads the active tester lease
 # to determine workflow_id and route to guardian. Issue the lease before running
 # post-task so the routing logic finds it.
-REVIEWER_LEASE_OUT=$(policy lease issue-for-dispatch "reviewer" \
+TESTER_LEASE_OUT=$(policy lease issue-for-dispatch "tester" \
     --worktree-path "$TMP_DIR" \
     --workflow-id "$WORKFLOW_ID" \
     --allowed-ops '["routine_local"]' 2>/dev/null || echo '{}')
-REVIEWER_LEASE_ID=$(printf '%s' "$REVIEWER_LEASE_OUT" | jq -r '.lease.lease_id // empty' 2>/dev/null || true)
+TESTER_LEASE_ID=$(printf '%s' "$TESTER_LEASE_OUT" | jq -r '.lease.lease_id // empty' 2>/dev/null || true)
 
-# Submit a valid reviewer completion record (verdict=ready_for_guardian) so
+# Submit a valid tester completion record (verdict=ready_for_guardian) so
 # post-task.sh routes to guardian instead of defaulting to implementer.
-if [[ -n "$REVIEWER_LEASE_ID" ]]; then
-    VALID_PAYLOAD=$(jq -nc \
-        '{
-            REVIEW_VERDICT: "ready_for_guardian",
-            REVIEW_HEAD_SHA: "abc123",
-            REVIEW_FINDINGS_JSON: ({findings: [{severity: "note", title: "ok", detail: "ok"}]} | tojson)
-        }')
+if [[ -n "$TESTER_LEASE_ID" ]]; then
+    VALID_PAYLOAD='{"EVAL_VERDICT":"ready_for_guardian","EVAL_TESTS_PASS":"true","EVAL_NEXT_ROLE":"guardian","EVAL_HEAD_SHA":"abc123"}'
     policy completion submit \
-        --lease-id "$REVIEWER_LEASE_ID" \
+        --lease-id "$TESTER_LEASE_ID" \
         --workflow-id "$WORKFLOW_ID" \
-        --role "reviewer" \
+        --role "tester" \
         --payload "$VALID_PAYLOAD" >/dev/null 2>&1 || true
 fi
 
-post=$(run_post_task "reviewer")
-assert_contains "reviewer post-task: suggests guardian" "$post" "guardian"
+post=$(run_post_task "tester")
+assert_contains "tester post-task: suggests guardian" "$post" "guardian"
 
 # ---------------------------------------------------------------------------
 # Phase 5: guardian — issue lease + set all gates then allow git op
@@ -297,6 +251,8 @@ assert_contains "reviewer post-task: suggests guardian" "$post" "guardian"
 printf '\n-- Phase: guardian\n'
 set_role "guardian"
 policy test-state set pass --total 1 --passed 1 --project-root "$TMP_DIR" >/dev/null 2>&1
+# Proof via runtime (flat file ignored since TKT-008 / guard.sh Check 10 migration)
+policy proof set "$WORKFLOW_ID" "verified" >/dev/null 2>&1
 # Workflow binding + scope required by Check 12
 policy workflow bind "$WORKFLOW_ID" "$TMP_DIR" "feature/lifecycle-test" >/dev/null 2>&1
 policy workflow scope-set "$WORKFLOW_ID" --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1
@@ -344,19 +300,14 @@ printf '\n-- Verify dispatch queue and events\n'
 # DEC-WS6-001: dispatch_queue is no longer the routing authority.
 # post-task.sh no longer enqueues into dispatch_queue. Instead, routing is
 # derived from the latest completion record via determine_next_role().
-# The reviewer phase submitted a valid completion with verdict=ready_for_guardian,
-# so the reviewer's completion record should show role=reviewer,
-# verdict=ready_for_guardian. (Phase 8 Slice 11 retired ``tester``.)
-# Note: the guardian phase submits its own completion record last, so we
-# filter for the reviewer completion explicitly rather than reading the
-# absolute latest.
-latest_comp=$(policy completion list --role reviewer 2>/dev/null \
-    | jq -r '.items[0] // {}' 2>/dev/null || echo '{}')
+# The tester phase submitted a valid completion with verdict=ready_for_guardian,
+# so the latest completion record should show role=tester, verdict=ready_for_guardian.
+latest_comp=$(policy completion latest 2>/dev/null || echo '{}')
 comp_role=$(printf '%s' "$latest_comp" | jq -r '.role // empty')
 comp_verdict=$(printf '%s' "$latest_comp" | jq -r '.verdict // empty')
 # valid is stored as SQLite integer (1/0); jq emits it as a number
 comp_valid=$(printf '%s' "$latest_comp" | jq -r '.valid // 0')
-assert_eq "completion record: reviewer role present" "reviewer" "$comp_role"
+assert_eq "completion record: latest role is tester" "tester" "$comp_role"
 assert_eq "completion record: verdict is ready_for_guardian" "ready_for_guardian" "$comp_verdict"
 assert_eq "completion record: valid" "1" "$comp_valid"
 

@@ -17,190 +17,23 @@
 # Never call this file directly.
 
 # ---------------------------------------------------------------------------
-# DB path resolver — single source of truth for all hook callers
-# ---------------------------------------------------------------------------
-
-# @decision DEC-CLAUDEX-SA-UNIFIED-DB-ROUTING-001
-# @title _resolve_policy_db delegates hook DB routing to the runtime resolver
-# @status accepted
-# @rationale pre-agent.sh L201-209 and subagent-start.sh L117-120 each had a
-#   2-tier resolver (CLAUDE_POLICY_DB → CLAUDE_PROJECT_DIR) that silently skipped
-#   the carrier write/consume when both env vars were absent in the harness launch
-#   env (the real production path for guardian SubagentStart on the global-soak lane).
-#   The result: _CARRIER_DB was empty, the guard evaluated false, and carrier
-#   operations were silently skipped — causing _HAS_CONTRACT=no, A8 deny at
-#   canonical_seat_no_carrier_contract, and no marker seating.  This function
-#   Later linked-worktree dispatch exposed the remaining split: shell used
-#   git rev-parse --show-toplevel while runtime/core/config.py used
-#   --git-common-dir to collapse feature worktrees onto the shared repo DB.
-#   This helper now delegates non-explicit resolution to runtime.core.config so
-#   hooks, CLI, prompt-pack, marker, lease, and completion paths share the same
-#   DB authority.
-# @chain pre-agent.sh carrier-write → pending_agent_requests → subagent-start.sh
-#   carrier-consume → _HAS_CONTRACT=yes → marker seating → lease claim → context role
-_resolve_policy_db() {
-    # Priority order mirrors runtime.core.config.resolve_db_path() for concrete
-    # project contexts:
-    #   1. $CLAUDE_POLICY_DB if already set and non-empty  (caller wins)
-    #   2. Explicit project root hint from $CLAUDE_PROJECT_DIR, if valid
-    #   3. CWD git repo/worktree discovery, passed as an explicit project root
-    # Returns empty outside project/git contexts; hooks must not silently route
-    # dispatch-significant state to the global home DB.
-    # Also exports CLAUDE_POLICY_DB when resolution succeeded via tier 2 or 3.
-    # Side-effect-free if CLAUDE_POLICY_DB is already set.
-    local resolved=""
-    if [[ -n "${CLAUDE_POLICY_DB:-}" ]]; then
-        local explicit_name=""
-        explicit_name="$(basename "$CLAUDE_POLICY_DB" 2>/dev/null || printf '%s' "$CLAUDE_POLICY_DB")"
-        if [[ "$explicit_name" != "policy.db" ]]; then
-            printf '%s\n' "$CLAUDE_POLICY_DB"
-            return 0
-        fi
-        unset CLAUDE_POLICY_DB
-    fi
-
-    local bridge_dir repo_root python_bin project_root
-    bridge_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    repo_root="$(cd "$bridge_dir/../.." && pwd)"
-    python_bin="$(command -v python3 2>/dev/null || printf '%s' python3)"
-    project_root="${CLAUDE_PROJECT_DIR:-}"
-
-    resolved="$("$python_bin" - "$repo_root" "$project_root" <<'PY' 2>/dev/null || true
-import os
-import subprocess
-import sys
-from pathlib import Path
-
-repo_root = sys.argv[1]
-project_root = sys.argv[2] or None
-sys.path.insert(0, repo_root)
-
-from runtime.core.config import resolve_db_path
-
-if project_root and Path(project_root).is_dir():
-    print(resolve_db_path(project_root=project_root))
-    raise SystemExit(0)
-
-try:
-    result = subprocess.run(
-        ["git", "-C", os.getcwd(), "rev-parse", "--is-inside-work-tree"],
-        capture_output=True,
-        text=True,
-        timeout=5,
-    )
-except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-    result = None
-
-if result is not None and result.returncode == 0 and result.stdout.strip() == "true":
-    print(resolve_db_path(project_root=os.getcwd()))
-PY
-)"
-
-    if [[ -n "$resolved" ]]; then
-        export CLAUDE_POLICY_DB="$resolved"
-        printf '%s\n' "$resolved"
-    fi
-}
-
-# ---------------------------------------------------------------------------
 # Core entry point
 # ---------------------------------------------------------------------------
 
-# _resolve_runtime_python
-# Single authoritative Python resolver for shell → runtime calls.
-#
-# Priority:
-#   1. CLAUDEX_PYTHON_BIN override
-#   2. First executable python that can import yaml
-#   3. Fallback to python3 on PATH
-#
-# The yaml import check matches the real runtime dependency surface used by
-# prompt-pack compilation. Without it, hooks can silently select the system
-# interpreter and collapse valid runtime-first paths into generic failures.
-_CLAUDEX_RUNTIME_PYTHON=""
-_resolve_runtime_python() {
-    if [[ -n "${CLAUDEX_PYTHON_BIN:-}" ]]; then
-        printf '%s\n' "${CLAUDEX_PYTHON_BIN}"
-        return 0
-    fi
-
-    if [[ -n "${_CLAUDEX_RUNTIME_PYTHON:-}" ]]; then
-        printf '%s\n' "${_CLAUDEX_RUNTIME_PYTHON}"
-        return 0
-    fi
-
-    local candidate=""
-    local resolved=""
-    for candidate in python3 /opt/homebrew/bin/python3 /usr/bin/python3; do
-        resolved="$candidate"
-        if [[ "$candidate" != */* ]]; then
-            resolved="$(command -v "$candidate" 2>/dev/null || true)"
-            [[ -z "$resolved" ]] && continue
-        elif [[ ! -x "$candidate" ]]; then
-            continue
-        fi
-
-        if "$resolved" -c 'import yaml' >/dev/null 2>&1; then
-            _CLAUDEX_RUNTIME_PYTHON="$resolved"
-            printf '%s\n' "$resolved"
-            return 0
-        fi
-    done
-
-    resolved="$(command -v python3 2>/dev/null || echo "python3")"
-    _CLAUDEX_RUNTIME_PYTHON="$resolved"
-    printf '%s\n' "$resolved"
-}
-
 cc_policy() {
-    local runtime_root="${CLAUDE_RUNTIME_ROOT:-$HOME/.claude/runtime}"
-    # Delegate DB resolution to the single authoritative resolver so cc_policy
-    # callers inherit the same 3-tier fallback without duplicating the logic.
-    # (DEC-CLAUDEX-SA-UNIFIED-DB-ROUTING-001)
-    local _skip_db_resolution=false
-    if [[ "${1:-}" == "hook" && ( "${2:-}" == "envelope" || "${2:-}" == "bash-pre-baseline" ) ]]; then
-        _skip_db_resolution=true
+    local bridge_dir repo_runtime runtime_root
+    bridge_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+    repo_runtime="$(cd "$bridge_dir/../.." && pwd -P)/runtime"
+    runtime_root="${CLAUDE_RUNTIME_ROOT:-$repo_runtime}"
+    if [[ ! -f "$runtime_root/cli.py" ]]; then
+        runtime_root="$HOME/.claude/runtime"
     fi
-    if [[ "$_skip_db_resolution" != "true" && -z "${CLAUDE_POLICY_DB:-}" ]]; then
-        _resolve_policy_db >/dev/null
+    # Scope db to project root when CLAUDE_PROJECT_DIR is set
+    if [[ -n "${CLAUDE_PROJECT_DIR:-}" && -z "${CLAUDE_POLICY_DB:-}" ]]; then
+        export CLAUDE_POLICY_DB="$CLAUDE_PROJECT_DIR/.claude/state.db"
     fi
-    "$(_resolve_runtime_python)" "$runtime_root/cli.py" "$@"
+    python3 "$runtime_root/cli.py" "$@"
 }
-
-# cc_policy_local_runtime <runtime_root> <args...>
-# Uses the same Python and DB authority as cc_policy(), but lets callers bind
-# the runtime root to the current worktree instead of the installed default.
-cc_policy_local_runtime() {
-    local runtime_root="$1"
-    shift || true
-    CLAUDE_RUNTIME_ROOT="$runtime_root" cc_policy "$@"
-}
-
-# ---------------------------------------------------------------------------
-# Runtime notification transport
-# ---------------------------------------------------------------------------
-
-emit_runtime_notification() {
-    local result_json="${1:-}"
-    local hooks_dir="${2:-}"
-    local notification_json=""
-    local notify_hook=""
-
-    notification_json=$(printf '%s' "$result_json" | jq -c '.runtimeNotification // empty' 2>/dev/null || echo "")
-    [[ -z "$notification_json" || "$notification_json" == "null" ]] && return 0
-
-    notify_hook="${hooks_dir}/notify.sh"
-    [[ -f "$notify_hook" ]] || return 0
-
-    printf '%s' "$notification_json" | bash "$notify_hook" >/dev/null 2>&1 || true
-}
-
-strip_runtime_notification() {
-    local result_json="${1:-}"
-    printf '%s' "$result_json" | jq -c 'del(.runtimeNotification)' 2>/dev/null || printf '%s\n' "$result_json"
-}
-
-export -f emit_runtime_notification strip_runtime_notification
 
 # ---------------------------------------------------------------------------
 # Schema bootstrap (lazy, idempotent)
@@ -265,9 +98,9 @@ rt_eval_invalidate() {
 # Agent marker wrappers
 # ---------------------------------------------------------------------------
 
-# rt_marker_get_active [project_root] [workflow_id]
-# Prints the active marker JSON, or {"found":false,...} when no active marker
-# exists.
+# rt_marker_get_active_role [project_root] [workflow_id]
+# Prints the role string of the currently active marker, or nothing when
+# no active marker exists.
 #
 # ENFORCE-RCA-6-ext / #26: Accepts optional project_root and workflow_id
 # so the caller can scope the lookup to its own project. Without scoping,
@@ -275,22 +108,15 @@ rt_eval_invalidate() {
 # detection — e.g. the orchestrator inherits an implementer role from a
 # marker left behind by a different project and is silently authorised
 # for source writes.
-rt_marker_get_active() {
+rt_marker_get_active_role() {
     _rt_ensure_schema
     local root="${1:-}"
     local wf="${2:-}"
+    local result
     local args=()
     [[ -n "$root" ]] && args+=(--project-root "$root")
     [[ -n "$wf"   ]] && args+=(--workflow-id "$wf")
-    cc_policy marker get-active "${args[@]}" 2>/dev/null
-}
-
-# rt_marker_get_active_role [project_root] [workflow_id]
-# Prints the role string of the currently active marker, or nothing when
-# no active marker exists.
-rt_marker_get_active_role() {
-    local result
-    result=$(rt_marker_get_active "${1:-}" "${2:-}" 2>/dev/null) || return 1
+    result=$(cc_policy marker get-active "${args[@]}" 2>/dev/null) || return 1
     printf '%s\n' "$result" | jq -r 'if .found then .role else empty end'
 }
 
@@ -418,33 +244,6 @@ rt_bug_file() {
         || echo '{"disposition":"failed_to_file","error":"runtime unavailable","fingerprint":"","issue_url":null,"encounter_count":0}'
 }
 
-# rt_issue_file <kind> <title> [body] [scope] [repo] [source_component] [file_path] [evidence] [project_root]
-#
-# Routes backlog/follow-up capture through the canonical issue pipeline:
-#   cc-policy issue file '{"item_kind":...}'
-#
-# This is the general capture path used by `/backlog`; rt_bug_file remains as
-# the compatibility wrapper for bug-specific hook callers.
-rt_issue_file() {
-    _rt_ensure_schema
-    local item_kind="$1"
-    local title="$2"
-    local body="${3:-}"
-    local scope="${4:-auto}"
-    local repo="${5:-}"
-    local source_component="${6:-}"
-    local file_path="${7:-}"
-    local evidence="${8:-}"
-    local project_root="${9:-}"
-
-    local json
-    json=$(printf '{"item_kind":"%s","title":"%s","body":"%s","scope":"%s","repo":"%s","source_component":"%s","file_path":"%s","evidence":"%s","project_root":"%s","fixed_now":false}' \
-        "$item_kind" "$title" "$body" "$scope" "$repo" "$source_component" "$file_path" "$evidence" "$project_root")
-
-    cc_policy issue file "$json" 2>/dev/null \
-        || echo '{"disposition":"failed_to_file","error":"runtime unavailable","fingerprint":"","issue_url":null,"encounter_count":0}'
-}
-
 # ---------------------------------------------------------------------------
 # Approval token wrappers (DEC-APPROVAL-001)
 # ---------------------------------------------------------------------------
@@ -516,24 +315,6 @@ rt_lease_claim() {
     [[ -n "$worktree_path" ]] && args+=("--worktree-path" "$worktree_path")
     [[ -n "$expected_role" ]] && args+=("--expected-role" "$expected_role")
     cc_policy "${args[@]}" 2>/dev/null || echo '{"found":false}'
-}
-
-# rt_lease_issue_for_dispatch <role> [worktree_path] [workflow_id] [branch] [requires_eval]
-# Issues a dispatch lease. Returns full issue JSON or '{"issued":false}'.
-# requires_eval defaults to true; pass "false", "0", or "no" to append --no-eval.
-rt_lease_issue_for_dispatch() {
-    _rt_ensure_schema
-    local role="${1:-}" worktree_path="${2:-}" workflow_id="${3:-}" branch="${4:-}" requires_eval="${5:-true}"
-    local args=("lease" "issue-for-dispatch" "$role")
-    [[ -n "$worktree_path" ]] && args+=("--worktree-path" "$worktree_path")
-    [[ -n "$workflow_id" ]] && args+=("--workflow-id" "$workflow_id")
-    [[ -n "$branch" ]] && args+=("--branch" "$branch")
-    case "$requires_eval" in
-        false|False|FALSE|0|no|No|NO)
-            args+=("--no-eval")
-            ;;
-    esac
-    cc_policy "${args[@]}" 2>/dev/null || echo '{"issued":false}'
 }
 
 # rt_lease_release <lease_id>

@@ -188,31 +188,25 @@ run_sub_case_c() {
 }
 
 # ---------------------------------------------------------------------------
-# Sub-case D: git commit WITH a valid lease + ready_for_guardian → allowed
-#
-# Compound-interaction test: covers the real production sequence end-to-end.
-# 1. Orchestrator issues lease via cc-policy lease issue-for-dispatch.
-# 2. Guardian landing actor runs git commit.
-# 3. Check 3 finds lease → validate_op() returns allowed=true.
-# 4. Check 10 finds ready_for_guardian + matching SHA → allowed.
-# 5. Commit proceeds.
+# Sub-case D: Guardian git commit WITH valid lease + v6_landing_readiness → allowed
 # ---------------------------------------------------------------------------
 run_sub_case_d() {
     local branch="feature/with-lease-commit-allowed"
-    _setup_repo_no_lease "$branch" "guardian:land"
+    _setup_repo_no_lease "$branch" "guardian"
     trap 'rm -rf "$TMP_DIR"' RETURN
 
-    # Set evaluation_state=ready_for_guardian with matching HEAD SHA
-    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-        evaluation set "$WF_ID" "ready_for_guardian" --head-sha "$CURRENT_HEAD" >/dev/null 2>&1
-
-    # Issue a guardian lease with routine_local ops allowed
-    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-        lease issue-for-dispatch "guardian" \
-        --workflow-id "$WF_ID" \
-        --worktree-path "$TMP_DIR" \
-        --branch "$branch" \
-        --allowed-ops '["routine_local"]' >/dev/null 2>&1
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" test-state set pass --project-root "$TMP_DIR" --head-sha "$CURRENT_HEAD" --passed 1 --total 1 >/dev/null 2>&1
+    local reviewer_json reviewer_run payload result guardian_run lease_meta
+    reviewer_json=$(CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" stage run-create --workflow-id "$WF_ID" --stage-id reviewer --worktree-path "$TMP_DIR")
+    reviewer_run=$(printf '%s' "$reviewer_json" | jq -r '.stage_run.id')
+    payload=$(jq -nc --arg run "$reviewer_run" --arg sha "$CURRENT_HEAD" '{stage_run_id:$run,stage_id:"reviewer",verdict:"ready_for_guardian",summary:"reviewed",head_sha:$sha,findings:[]}')
+    result=$(CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" stage result-submit "$reviewer_run" --payload "$payload")
+    guardian_run=$(printf '%s' "$result" | jq -r '.next_stage_run.id')
+    lease_meta=$(jq -nc --arg run "$guardian_run" '{stage_run_id:$run}')
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" lease issue-for-dispatch "guardian" \
+        --workflow-id "$WF_ID" --worktree-path "$TMP_DIR" --branch "$branch" \
+        --allowed-ops '["routine_local","high_risk"]' --metadata "$lease_meta" >/dev/null 2>&1
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" stage landing-ready "$guardian_run" >/dev/null 2>&1
 
     local cmd output decision
     cmd="git -C \"$TMP_DIR\" commit --allow-empty -m 'leased commit'"
@@ -220,7 +214,7 @@ run_sub_case_d() {
     decision=$(_decision "$output")
 
     if [[ -z "$output" || "$decision" != "deny" ]]; then
-        pass "D" "git commit WITH lease + ready_for_guardian allowed (lease path unchanged)"
+        pass "D" "Guardian git commit WITH lease + v6_landing_readiness allowed"
     else
         fail "D" "unexpected deny with valid lease: $(_reason "$output")"
     fi

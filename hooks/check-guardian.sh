@@ -14,7 +14,9 @@ source "$(dirname "$0")/context-lib.sh"
 
 # Capture stdin (contains agent response)
 AGENT_RESPONSE=$(read_input 2>/dev/null || echo "{}")
-seed_project_dir_from_hook_payload_cwd "$AGENT_RESPONSE"
+if agent_response_text "$AGENT_RESPONSE" | grep -q '```claude_ctrl_result'; then
+    exit 0
+fi
 AGENT_TYPE=$(printf '%s' "$AGENT_RESPONSE" | jq -r '.agent_type // empty' 2>/dev/null || true)
 
 PROJECT_ROOT=$(detect_project_root)
@@ -27,22 +29,13 @@ _HOOK_START_AT=$(date +%s)
 # Local runtime resolution — see post-task.sh DEC-BRIDGE-002 for rationale.
 # ---------------------------------------------------------------------------
 _HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
-_LOCAL_RUNTIME_ROOT="$_HOOK_DIR/../runtime"
+_LOCAL_RUNTIME_CLI="$_HOOK_DIR/../runtime/cli.py"
 _local_cc_policy() {
-    if [[ -z "${CLAUDE_POLICY_DB:-}" ]]; then
-        _resolve_policy_db >/dev/null
+    if [[ -n "${CLAUDE_PROJECT_DIR:-}" && -z "${CLAUDE_POLICY_DB:-}" ]]; then
+        export CLAUDE_POLICY_DB="$CLAUDE_PROJECT_DIR/.claude/state.db"
     fi
-    cc_policy_local_runtime "$_LOCAL_RUNTIME_ROOT" "$@"
+    python3 "$_LOCAL_RUNTIME_CLI" "$@"
 }
-
-# Extract agent response text before lifecycle handling. Guardian admission is a
-# non-canonical mode, so it must not deactivate canonical Guardian markers or
-# submit Guardian completion records.
-RESPONSE_TEXT=$(agent_response_text "$AGENT_RESPONSE")
-if [[ "$AGENT_TYPE" == "guardian" ]] && printf '%s' "$RESPONSE_TEXT" | grep -qE '^ADMISSION_VERDICT:[[:space:]]*'; then
-    printf '%s' "$AGENT_RESPONSE" | "$_HOOK_DIR/lib/guardian-admission-stop.sh"
-    exit 0
-fi
 
 # track_subagent_stop removed (TKT-008): .subagent-tracker no longer written.
 
@@ -56,19 +49,10 @@ if [[ -n "$AGENT_TYPE" ]]; then
     _local_cc_policy lifecycle on-stop "$AGENT_TYPE" --project-root "$PROJECT_ROOT" >/dev/null 2>&1 || true
 fi
 
-# Release the seat and abandon every active supervision_thread touching it.
-# DEC-SUPERVISION-THREADS-DOMAIN-001 continuation. Best-effort — seat-release
-# failures must never block the hook. release_session_seat() is idempotent
-# (repeat calls return released=false, abandoned_count=0) so retries on
-# unexpected interrupts are safe.
-SESSION_ID=$(printf '%s' "$AGENT_RESPONSE" | jq -r '.session_id // empty' 2>/dev/null || echo "")
-if [[ -n "$SESSION_ID" && -n "$AGENT_TYPE" ]]; then
-    _local_cc_policy dispatch seat-release \
-        --session-id "$SESSION_ID" \
-        --agent-type "$AGENT_TYPE" >/dev/null 2>&1 || true
-fi
-
 ISSUES=()
+
+# Extract agent's response text first (needed for phase-boundary detection)
+RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.last_assistant_message // .assistant_response // .response // .result // .output // empty' 2>/dev/null || echo "")
 
 # --- Completion contract submission (Phase 2: DEC-COMPLETION-001) ---
 # Parse LANDING_RESULT and OPERATION_CLASS from guardian response text.
@@ -102,8 +86,8 @@ fi
 if ! is_claude_meta_repo "$PROJECT_ROOT"; then
     # WS1: use lease_context() to derive workflow_id from the active lease.
     # When a lease is active its workflow_id is authoritative over branch-derived id.
-    _GD_LEASE_CTX=$(_local_cc_policy lease current --worktree-path "$PROJECT_ROOT" 2>/dev/null || echo '{"found":false}')
-    _GD_LEASE_FOUND=$(printf '%s' "$_GD_LEASE_CTX" | jq -r 'if (.found == true or .lease_id != null) then "true" else "false" end' 2>/dev/null || echo "false")
+    _GD_LEASE_CTX=$(lease_context "$PROJECT_ROOT")
+    _GD_LEASE_FOUND=$(printf '%s' "$_GD_LEASE_CTX" | jq -r '.found' 2>/dev/null || echo "false")
     if [[ "$_GD_LEASE_FOUND" == "true" ]]; then
         _GD_LEASE_ID=$(printf '%s' "$_GD_LEASE_CTX" | jq -r '.lease_id // empty' 2>/dev/null || true)
         _GD_WF_ID=$(printf '%s' "$_GD_LEASE_CTX" | jq -r '.workflow_id // empty' 2>/dev/null || true)
@@ -123,12 +107,8 @@ if ! is_claude_meta_repo "$PROJECT_ROOT"; then
             --arg wt "${_GD_WORKTREE_PATH:-}" \
             'if $wt != "" then {LANDING_RESULT:$lr, OPERATION_CLASS:$oc, WORKTREE_PATH:$wt}
              else {LANDING_RESULT:$lr, OPERATION_CLASS:$oc} end')
-        _GD_CT_RESULT=$(_local_cc_policy completion submit \
-            --lease-id "$_GD_LEASE_ID" \
-            --workflow-id "$_GD_WF_ID" \
-            --role "guardian" \
-            --payload "$_GD_PAYLOAD" 2>/dev/null || echo '{"valid":false}')
-        _GD_CT_VALID=$(printf '%s' "${_GD_CT_RESULT:-}" | jq -r 'if .valid == 1 or .valid == true then "true" else "false" end' 2>/dev/null || echo "false")
+        _GD_CT_RESULT=$(rt_completion_submit "$_GD_LEASE_ID" "$_GD_WF_ID" "guardian" "$_GD_PAYLOAD")
+        _GD_CT_VALID=$(printf '%s' "${_GD_CT_RESULT:-}" | jq -r '.valid // "false"' 2>/dev/null || echo "false")
         if [[ "$_GD_CT_VALID" != "true" ]]; then
             _GD_CT_MISSING=$(printf '%s' "$_GD_CT_RESULT" | jq -r '.missing_fields | join(", ")' 2>/dev/null || echo "unknown")
             # Advisory only in v1 — the git operation already completed.
@@ -147,11 +127,11 @@ if ! is_claude_meta_repo "$PROJECT_ROOT"; then
     # @rationale guard.sh:355 reset evaluation_state to idle before the merge
     #   command executed. If the merge was subsequently denied (scope violation,
     #   approval missing, etc.) the eval readiness was consumed with no landing.
-    #   The reviewer would need to re-run to re-issue ready_for_guardian. Fix:
+    #   The tester would need to re-run to re-issue ready_for_guardian. Fix:
     #   remove the pre-merge reset from guard.sh; add a post-landing reset here
-    #   gated on LANDING_RESULT=committed|merged|pushed so only real landings consume
+    #   gated on LANDING_RESULT=committed|merged so only real landings consume
     #   the clearance.
-    if [[ "$_GD_LANDING_RESULT" == "committed" || "$_GD_LANDING_RESULT" == "merged" || "$_GD_LANDING_RESULT" == "pushed" ]]; then
+    if [[ "$_GD_LANDING_RESULT" == "committed" || "$_GD_LANDING_RESULT" == "merged" ]]; then
         rt_eval_set "$_GD_WF_ID" "idle" 2>/dev/null || true
         rt_event_emit "eval_consumed" "Landing confirmed: $_GD_LANDING_RESULT for $_GD_WF_ID" || true
     fi
@@ -225,11 +205,11 @@ if [[ -n "$RESPONSE_TEXT" ]]; then
 
     if [[ -n "$HAS_APPROVAL_QUESTION" && -z "$HAS_EXECUTION" ]]; then
         # Under auto-land policy (DEC-GUARD-AUTOLAND), approval questions are
-        # expected only for real user-decision boundaries: destructive/history-
-        # rewrite operations, ambiguous publish placement, or irreconcilable
-        # agent disagreement. Straightforward push is part of normal landing.
-        HAS_USER_DECISION_BOUNDARY=$(echo "$RESPONSE_TEXT" | grep -iE 'rebase|reset|force|delet|non-fast-forward|history rewrite|ambiguous (push|publish)|irreconcilable|reviewer.*disagree|implementer.*disagree' || echo "")
-        if [[ -z "$HAS_USER_DECISION_BOUNDARY" ]]; then
+        # expected only for high-risk ops (push, rebase, reset, force, destructive).
+        # For local landing (commit, merge without push), an approval question
+        # without execution is a regression — Guardian should auto-land.
+        HAS_HIGH_RISK_OP=$(echo "$RESPONSE_TEXT" | grep -iE 'push|rebase|reset|force|delet' || echo "")
+        if [[ -z "$HAS_HIGH_RISK_OP" ]]; then
             ISSUES+=("Auto-land regression: Guardian asked for approval on a local landing instead of executing automatically (DEC-GUARD-AUTOLAND)")
         fi
     fi
@@ -252,14 +232,12 @@ elif [[ "$_TS_STATUS" == "fail" ]]; then
 fi
 
 # Check 6: Evaluation state for git operations (TKT-024)
-# Guardian should only operate when evaluation_state == "ready_for_guardian"
-# (projected from the active SubagentStop reviewer adapter; the legacy tester
-# producer was retired in Phase 8 Slice 10, and the legacy proof_state
-# storage was retired under DEC-CATEGORY-C-PROOF-RETIRE-001).
+# Validates evaluation_state instead of proof_state. Guardian should only
+# operate when evaluation_state == "ready_for_guardian" (set by check-tester.sh).
 EVAL_STATUS=$(read_evaluation_status "$PROJECT_ROOT" "$_GD_WF_ID")
 HAS_GIT_OP=$(echo "$RESPONSE_TEXT" | grep -iE 'merged|committed|pushed|git\s+(\S+\s+)*merge|git\s+(\S+\s+)*commit|git\s+(\S+\s+)*push' || echo "")
 if [[ -n "$HAS_GIT_OP" && "$EVAL_STATUS" != "ready_for_guardian" ]] && ! is_claude_meta_repo "$PROJECT_ROOT"; then
-    ISSUES+=("Evaluation state is '$EVAL_STATUS' after git operation — Guardian should only proceed after the reviewer issues a ready_for_guardian verdict")
+    ISSUES+=("Evaluation state is '$EVAL_STATUS' after git operation — Guardian should only proceed after Tester issues EVAL_VERDICT=ready_for_guardian")
 fi
 
 # Build context message

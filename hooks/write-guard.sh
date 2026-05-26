@@ -3,7 +3,7 @@
 # PreToolUse hook — matcher: Write|Edit
 #
 # Only the implementer agent role may write source files. All other roles
-# (orchestrator/empty, planner, Plan, reviewer, guardian) are denied with a
+# (orchestrator/empty, planner, Plan, tester, guardian) are denied with a
 # message directing them to dispatch an implementer. Non-source files are
 # not governed here; TKT-004 handles governance markdown separately.
 #
@@ -23,7 +23,7 @@
 #
 # Denies when:
 #   - File has a recognized source extension (SOURCE_EXTENSIONS)
-#   - Active role is NOT implementer (empty, planner, Plan, reviewer, guardian)
+#   - Active role is NOT implementer (empty, planner, Plan, tester, guardian)
 #
 # Does NOT fire for:
 #   - Non-source files (config, docs, markdown, JSON, YAML)
@@ -36,7 +36,6 @@ source "$(dirname "$0")/context-lib.sh"
 
 # shellcheck disable=SC2034  # HOOK_INPUT is consumed by get_field via context-lib shared state
 HOOK_INPUT=$(read_input)
-seed_project_dir_from_hook_payload_cwd "$HOOK_INPUT"
 FILE_PATH=$(get_field '.tool_input.file_path')
 
 # Exit silently if no file path
@@ -73,7 +72,7 @@ if [[ "$ROLE" == "implementer" ]]; then
     exit 0
 fi
 
-# DENY: all other roles — orchestrator (empty), planner, Plan, reviewer, guardian
+# DENY: all other roles — orchestrator (empty), planner, Plan, tester, guardian
 if [[ -z "$ROLE" ]]; then
     ROLE_LABEL="orchestrator (no active agent)"
 else
@@ -82,7 +81,7 @@ fi
 
 DENY_REASON="BLOCKED: $ROLE_LABEL cannot write source files. Only the implementer agent may write source code.
 
-Action: Dispatch an implementer agent for this change."
+Action: Launch or continue implementer as an ordinary Agent with no isolation flag, using the Guardian-provisioned worktree. Do not retry the source edit from the orchestrator or Guardian."
 
 escaped_reason=$(printf '%s' "$DENY_REASON" | jq -Rs .)
 

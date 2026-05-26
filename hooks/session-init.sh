@@ -18,15 +18,18 @@ source "$(dirname "$0")/log.sh"
 source "$(dirname "$0")/context-lib.sh"
 
 PROJECT_ROOT=$(detect_project_root)
-SESSION_ID=$(canonical_session_id)
 CONTEXT_PARTS=()
 
-# Claude Code's Bash tool inherits session-persisted environment from the
-# SessionStart-only CLAUDE_ENV_FILE. Keep POSIX and Homebrew tool lookup stable
-# even when the launching shell provides a sparse PATH.
-if [[ -n "${CLAUDE_ENV_FILE:-}" ]]; then
-    printf '%s\n' 'export PATH="/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin:$PATH"' >> "$CLAUDE_ENV_FILE"
+# --- Runtime DB schema ---
+# SessionStart is the earliest reliable place to force the project DB into the
+# config's major schema. Policy hooks still fail closed on runtime errors, but
+# startup should repair stale major-version DBs before the first tool call.
+_SCHEMA_BOOT=$(cc_policy schema ensure 2>&1) || _SCHEMA_BOOT=""
+_SCHEMA_MAJOR=$(printf '%s' "${_SCHEMA_BOOT:-}" | jq -r '.schema_major // empty' 2>/dev/null || true)
+if [[ "$_SCHEMA_MAJOR" != "6" ]]; then
+    CONTEXT_PARTS+=("ENFORCEMENT DEGRADED: Runtime DB did not initialize as schema_major=6 at session start. Bash/Write/Edit policy hooks will fail closed until cc-policy schema ensure succeeds.")
 fi
+unset _SCHEMA_BOOT _SCHEMA_MAJOR
 
 # --- Git state ---
 get_git_state "$PROJECT_ROOT"
@@ -69,9 +72,9 @@ fi
 # --- Expire stale leases and show active lease (Phase 2) ---
 # Expire any TTL-exceeded leases so they do not block new dispatch.
 # Then display the active lease (if any) for situational awareness.
-rt_lease_expire_stale 2>/dev/null || true
+rt_lease_expire_stale >/dev/null 2>&1 || true
 # Marker stale cleanup (TKT-STAB-A4): expire markers from crashed sessions.
-python3 -m runtime.cli marker expire-stale 2>/dev/null || true
+python3 -m runtime.cli marker expire-stale >/dev/null 2>&1 || true
 if ! is_claude_meta_repo "$PROJECT_ROOT"; then
     _SESS_LEASE=$(rt_lease_current "$PROJECT_ROOT")
     _SESS_LEASE_FOUND=$(printf '%s' "${_SESS_LEASE:-}" | jq -r 'if .found then "yes" else "no" end' 2>/dev/null || echo "no")
@@ -108,7 +111,7 @@ unset _RUNTIME_ROOT _snap _active_agent _marker_age _age_min
 # --- Expire stale leases + show active lease ---
 _SESSION_RUNTIME_ROOT="${CLAUDE_RUNTIME_ROOT:-$HOME/.claude/runtime}"
 if [[ -f "$_SESSION_RUNTIME_ROOT/cli.py" ]]; then
-    CLAUDE_RUNTIME_ROOT="$_SESSION_RUNTIME_ROOT" cc_policy lease expire-stale 2>/dev/null || true
+    CLAUDE_RUNTIME_ROOT="$_SESSION_RUNTIME_ROOT" cc_policy lease expire-stale >/dev/null 2>&1 || true
     _LEASE_SUM=$(rt_lease_current "$PROJECT_ROOT")
     _LS_ROLE=$(printf '%s' "${_LEASE_SUM:-}" | jq -r '.role // empty' 2>/dev/null || true)
     if [[ -n "$_LS_ROLE" ]]; then
@@ -118,11 +121,9 @@ if [[ -f "$_SESSION_RUNTIME_ROOT/cli.py" ]]; then
 fi
 unset _SESSION_RUNTIME_ROOT _LEASE_SUM _LS_ROLE _LS_NS
 
-# --- Workflow evaluation state (TKT-024) ---
-# Shows evaluation_state as the readiness display. The legacy proof_state
-# storage was retired under DEC-CATEGORY-C-PROOF-RETIRE-001.
-# W-CONV-3: resolve workflow_id lease-first so session HUD shows the correct
-# eval state when a lease is active with a different workflow_id than the branch.
+# --- Workflow readiness summary ---
+# v6 source landing is governed by v6_landing_readiness. Legacy evaluation_state
+# remains history/migration evidence and is not shown as the active authority.
 if ! is_claude_meta_repo "$PROJECT_ROOT"; then
     _SESS_LEASE_CTX=$(lease_context "$PROJECT_ROOT")
     _SESS_LEASE_FOUND=$(printf '%s' "$_SESS_LEASE_CTX" | jq -r '.found' 2>/dev/null || echo "false")
@@ -134,16 +135,16 @@ if ! is_claude_meta_repo "$PROJECT_ROOT"; then
     _SESS_EVAL_STATUS=$(read_evaluation_status "$PROJECT_ROOT" "$_SESS_WF_ID")
     case "$_SESS_EVAL_STATUS" in
         ready_for_guardian)
-            CONTEXT_PARTS+=("Evaluation: ready_for_guardian — Guardian may proceed to commit/merge.")
+            CONTEXT_PARTS+=("Legacy evaluation_state: ready_for_guardian. For v6 source landing, require v6_landing_readiness.")
             ;;
         needs_changes)
-            CONTEXT_PARTS+=("Evaluation: needs_changes — Tester found issues. Implementer should address them.")
+            CONTEXT_PARTS+=("Legacy evaluation_state: needs_changes. Active v6 readiness comes from reviewer.")
             ;;
         blocked_by_plan)
-            CONTEXT_PARTS+=("Evaluation: blocked_by_plan — Tester flagged a plan gap. Dispatch Planner.")
+            CONTEXT_PARTS+=("Legacy evaluation_state: blocked_by_plan. Dispatch planner if the active v6 reviewer reports a plan gap.")
             ;;
         pending)
-            CONTEXT_PARTS+=("Evaluation: pending — awaiting Tester evaluation.")
+            CONTEXT_PARTS+=("Legacy evaluation_state: pending. Active v6 readiness comes from reviewer.")
             ;;
         # idle: no output (background noise)
     esac
@@ -153,32 +154,35 @@ fi
 # --- Enforcement gaps ---
 # Persist across sessions — surface any open gaps so the model knows
 # enforcement is degraded before it writes anything.
-GAPS_JSON=$(cc_policy enforcement-gap list --project-root "$PROJECT_ROOT" 2>/dev/null || echo '{"items":[]}')
-while IFS=$'\t' read -r gap_type ext tool; do
-    [[ -z "$gap_type" ]] && continue
-    if [[ "$gap_type" == "unsupported" ]]; then
-        CONTEXT_PARTS+=("ENFORCEMENT DEGRADED: No linter profile for .${ext} files (unsupported). Writes to .${ext} source files are not being linted. Add a linter config to restore enforcement.")
-    else
-        CONTEXT_PARTS+=("ENFORCEMENT DEGRADED: Linter '${tool}' for .${ext} files is not installed (missing_dep). Install '${tool}' to restore lint enforcement.")
-    fi
-done < <(printf '%s' "$GAPS_JSON" | jq -r '.items[]? | [.gap_type, .ext, .tool] | @tsv' 2>/dev/null)
+GAPS_FILE="${PROJECT_ROOT}/.claude/.enforcement-gaps"
+if [[ -f "$GAPS_FILE" && -s "$GAPS_FILE" ]]; then
+    GAP_COUNT=0
+    while IFS='|' read -r gap_type ext tool _first _count; do
+        [[ -z "$gap_type" ]] && continue
+        GAP_COUNT=$(( GAP_COUNT + 1 ))
+        if [[ "$gap_type" == "unsupported" ]]; then
+            CONTEXT_PARTS+=("ENFORCEMENT DEGRADED: No linter profile for .${ext} files (unsupported). Writes to .${ext} source files are not being linted. Add a linter config to restore enforcement.")
+        else
+            CONTEXT_PARTS+=("ENFORCEMENT DEGRADED: Linter '${tool}' for .${ext} files is not installed (missing_dep). Install '${tool}' to restore lint enforcement.")
+        fi
+    done < "$GAPS_FILE"
+fi
 
 # --- Preserved context from pre-compaction ---
-# compact-preserve.sh stores pre-compaction context in state.db. Re-inject it
-# here so the post-compaction session has full context even if the
-# additionalContext from PreCompact was lost in summarization.
-PRESERVE_JSON=$(cc_policy preserved-context consume \
-    --project-root "$PROJECT_ROOT" \
-    --session-id "$SESSION_ID" 2>/dev/null || echo '{"found":false}')
-PRESERVE_FOUND=$(printf '%s' "$PRESERVE_JSON" | jq -r 'if .found then "yes" else "no" end' 2>/dev/null || echo "no")
-if [[ "$PRESERVE_FOUND" == "yes" ]]; then
+# compact-preserve.sh writes .preserved-context before compaction.
+# Re-inject it here so the post-compaction session has full context
+# even if the additionalContext from PreCompact was lost in summarization.
+PRESERVE_FILE="${PROJECT_ROOT}/.claude/.preserved-context"
+if [[ -f "$PRESERVE_FILE" && -s "$PRESERVE_FILE" ]]; then
     CONTEXT_PARTS+=("Preserved context from before compaction:")
     while IFS= read -r line; do
         # Skip the header comment
         [[ "$line" =~ ^#.* ]] && continue
         [[ -z "$line" ]] && continue
         CONTEXT_PARTS+=("  $line")
-    done < <(printf '%s' "$PRESERVE_JSON" | jq -r '.context_text // empty' 2>/dev/null)
+    done < "$PRESERVE_FILE"
+    # One-time use: remove after injecting so it doesn't persist across sessions
+    rm -f "$PRESERVE_FILE"
 fi
 
 # --- Stale session files ---
@@ -190,8 +194,8 @@ done
 
 # --- Todo HUD (listing with active-session annotations) ---
 TODO_SCRIPT="$HOME/.claude/scripts/todo.sh"
-if [[ -x "$TODO_SCRIPT" ]] && command -v gh >/dev/null 2>&1; then
-    HUD_OUTPUT=$("$TODO_SCRIPT" hud 2>/dev/null || echo "")
+if [[ -x "$TODO_SCRIPT" ]]; then
+    HUD_OUTPUT=$("$TODO_SCRIPT" hud-cached 2>/dev/null || echo "")
     if [[ -n "$HUD_OUTPUT" ]]; then
         while IFS= read -r line; do
             CONTEXT_PARTS+=("$line")
@@ -202,16 +206,18 @@ fi
 # .agent-findings flat file removed (TKT-008): agent findings now flow through
 # the runtime event store (rt_event_emit "agent_finding"). No file to inject.
 
-# --- Retired prompt-count flatfile cleanup ---
-# Prompt counts now live in state.db. Remove stale historical files only.
+# --- Reset prompt-count so first-prompt fallback re-fires after /clear ---
+# The first-prompt path in prompt-submit.sh is the reliable HUD injection point.
+# Without this reset, /clear leaves the old prompt-count file and the fallback
+# never triggers again, so the HUD disappears.
 rm -f "$PROJECT_ROOT/.claude/.prompt-count-"*
 rm -f "$PROJECT_ROOT/.claude/.session-start-epoch"
 # .subagent-tracker rm removed (TKT-008): file no longer written.
 
 # --- Clear stale test status from previous session ---
 # Stale passing results from a previous session must not satisfy the guard gate.
-# WS3: read from SQLite (canonical), clear it, then remove any stale historical
-# flat-file so older runs cannot confuse humans inspecting the tree.
+# WS3: read from SQLite (canonical), clear it, then also remove the flat-file
+# (backward compat — test-runner.sh will regenerate both after the first run).
 _TS_JSON=$(rt_test_state_get "$PROJECT_ROOT" 2>/dev/null) || _TS_JSON=""
 _TS_RESULT=$(printf '%s' "${_TS_JSON:-}" | jq -r '.status // "unknown"' 2>/dev/null || echo "unknown")
 _TS_FAILS=$(printf '%s' "${_TS_JSON:-}" | jq -r '.fail_count // 0' 2>/dev/null || echo "0")
@@ -220,7 +226,7 @@ if [[ "$_TS_RESULT" == "fail" ]]; then
 fi
 # Reset SQLite test state so stale pass does not satisfy guard this session.
 rt_test_state_set "unknown" "$PROJECT_ROOT" >/dev/null 2>&1 || true
-# Also clear the retired flat-file.
+# Also clear the flat-file (backward compat).
 rm -f "${PROJECT_ROOT}/.claude/.test-status"
 
 # --- Output as additionalContext ---

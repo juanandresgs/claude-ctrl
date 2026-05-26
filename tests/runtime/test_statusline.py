@@ -11,31 +11,28 @@ is covered without subprocess overhead. The compound-interaction test
 (test_snapshot_full_production_sequence) validates the CLI path end-to-end.
 
 W-CONV-4: proof_status and proof_workflow were removed from the snapshot dict.
-The proof_state table itself was retired under DEC-CATEGORY-C-PROOF-RETIRE-001;
-the display surface now shows only evaluation_state fields (eval_status,
-eval_workflow, eval_head_sha).
+proof_state table is retained for storage; the display surface now shows only
+evaluation_state fields (eval_status, eval_workflow, eval_head_sha).
 
 @decision DEC-RT-011
 Title: Statusline snapshot is a read-only projection across all runtime tables
 Status: accepted
 Rationale: snapshot() reads evaluation_state (sole readiness authority),
-  agent_markers, worktrees, completion_records, and events in
+  agent_markers, worktrees, dispatch_cycles, completion_records, and events in
   a single pass. It never writes. The extended field set (active_agent_id,
   worktrees list, dispatch_cycle_id, recent_events list) was added in TKT-011
   so scripts/statusline.sh has everything it needs for a richer HUD without
-  calling multiple CLI subcommands. proof_state fields were removed from the
-  snapshot in W-CONV-4 (DEC-EVAL-006) and the proof_state storage was retired
-  under DEC-CATEGORY-C-PROOF-RETIRE-001.
+  calling multiple CLI subcommands. proof_state was removed from the snapshot
+  in W-CONV-4 (DEC-EVAL-006) — operators saw contradictory readiness signals.
   All fields have safe None/0 defaults so the statusline never crashes on an
   empty or partially-populated DB.
 
 @decision DEC-WS6-001
 Title: dispatch_status derived from completion records, not dispatch_queue
 Status: accepted
-Rationale: WS6 removed dispatch_queue from the routing hot-path. dispatch_status
-  is derived from determine_next_role(latest_completion.role, verdict).
-  The dispatch_queue / dispatch_cycles tables were subsequently retired under
-  DEC-CATEGORY-C-DISPATCH-RETIRE-001.
+Rationale: WS6 removes dispatch_queue from the routing hot-path. dispatch_status
+  is now derived from determine_next_role(latest_completion.role, verdict).
+  The queue table remains for backward compat but is not the routing authority.
 """
 
 from __future__ import annotations
@@ -49,9 +46,10 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import runtime.core.completions as completions_mod
-import runtime.core.critic_runs as critic_runs_mod
+import runtime.core.dispatch as dispatch_mod
 import runtime.core.events as events_mod
 import runtime.core.markers as markers_mod
+import runtime.core.proof as proof_mod  # retained: storage still used in compound test
 import runtime.core.statusline as statusline
 import runtime.core.worktrees as worktrees_mod
 from runtime.core.db import connect_memory
@@ -97,7 +95,6 @@ REQUIRED_KEYS = {
     "recent_event_count",
     "recent_events",
     "last_review",
-    "critic_run",
     "snapshot_at",
     "status",
     "errors",
@@ -135,136 +132,11 @@ def test_snapshot_empty_db_safe_defaults(conn):
     assert snap["last_review"]["reviewer"] is None
     assert snap["last_review"]["verdict"] is None
     assert snap["last_review"]["reviewed_at"] is None
-    assert snap["critic_run"]["found"] is False
-    assert snap["critic_run"]["active"] is False
-    assert snap["critic_run"]["status"] is None
-    assert snap["critic_run"]["verdict"] is None
-    assert snap["critic_run"]["progress_preview"] == []
     # DEC-SL-160: errors list is empty on clean DB
     assert snap["errors"] == []
     assert isinstance(snap["snapshot_at"], int)
     assert snap["snapshot_at"] > 0
     assert snap["status"] == "ok"
-
-
-def test_snapshot_reflects_active_critic_run(conn):
-    """Latest critic run appears as a compact statusline heartbeat source."""
-    run = critic_runs_mod.start(
-        conn,
-        workflow_id="wf-status-critic",
-        provider="codex",
-    )
-    critic_runs_mod.progress(
-        conn,
-        run_id=run["run_id"],
-        message="Provider status: codex ready.",
-        phase="provider",
-        status="provider_ready",
-    )
-    snap = statusline.snapshot(conn)
-    assert snap["critic_run"]["found"] is True
-    assert snap["critic_run"]["active"] is True
-    assert snap["critic_run"]["status"] == "provider_ready"
-    assert snap["critic_run"]["provider"] == "codex"
-    assert snap["critic_run"]["workflow_id"] == "wf-status-critic"
-    assert snap["critic_run"]["progress_preview"][-1] == "Provider status: codex ready."
-
-
-def test_snapshot_persists_unavailable_fallback_until_completed(conn):
-    """CRITIC_UNAVAILABLE stays visible until reviewer fallback closes it."""
-    completions_mod.submit(
-        conn,
-        lease_id="lease-critic-anchor",
-        workflow_id="wf-status-fallback",
-        role="implementer",
-        payload={"IMPL_STATUS": "complete", "IMPL_HEAD_SHA": "impl-head"},
-    )
-    run = critic_runs_mod.start(conn, workflow_id="wf-status-fallback", provider="codex")
-    critic_runs_mod.complete(
-        conn,
-        run_id=run["run_id"],
-        verdict="CRITIC_UNAVAILABLE",
-        provider="codex",
-        summary="Codex unavailable.",
-        detail="Provider authentication missing.",
-        fallback="reviewer",
-    )
-    snap = statusline.snapshot(conn)
-    assert snap["critic_run"]["status"] == "fallback_required"
-    assert snap["critic_run"]["verdict"] == "CRITIC_UNAVAILABLE"
-    assert snap["critic_run"]["fallback"] == "reviewer"
-
-    critic_runs_mod.mark_fallback_completed(
-        conn,
-        workflow_id="wf-status-fallback",
-        summary="Reviewer fallback completed.",
-    )
-    snap_after = statusline.snapshot(conn)
-    assert snap_after["critic_run"]["found"] is False
-
-
-def test_snapshot_hides_terminal_critic_without_current_implementer_anchor(conn):
-    """A completed critic row is historical unless anchored to current routing."""
-    run = critic_runs_mod.start(conn, workflow_id="wf-old-critic", provider="codex")
-    critic_runs_mod.complete(
-        conn,
-        run_id=run["run_id"],
-        verdict="TRY_AGAIN",
-        provider="codex",
-        summary="Old retry.",
-    )
-    snap = statusline.snapshot(conn)
-    assert snap["critic_run"]["found"] is False
-
-
-def test_snapshot_hides_terminal_critic_after_reviewer_completion_supersedes_it(conn):
-    """Reviewer completion means the implementer critic result is no longer current."""
-    import json as _json
-
-    completions_mod.submit(
-        conn,
-        lease_id="lease-impl",
-        workflow_id="wf-superseded-critic",
-        role="implementer",
-        payload={"IMPL_STATUS": "complete", "IMPL_HEAD_SHA": "impl-head"},
-    )
-    run = critic_runs_mod.start(conn, workflow_id="wf-superseded-critic", provider="codex")
-    critic_runs_mod.complete(
-        conn,
-        run_id=run["run_id"],
-        verdict="READY_FOR_REVIEWER",
-        provider="codex",
-        summary="Hand off.",
-    )
-    snap_current = statusline.snapshot(conn)
-    assert snap_current["critic_run"]["found"] is True
-    assert snap_current["critic_run"]["verdict"] == "READY_FOR_REVIEWER"
-
-    completions_mod.submit(
-        conn,
-        lease_id="lease-reviewer",
-        workflow_id="wf-superseded-critic",
-        role="reviewer",
-        payload={
-            "REVIEW_VERDICT": "ready_for_guardian",
-            "REVIEW_HEAD_SHA": "review-head",
-            "REVIEW_FINDINGS_JSON": _json.dumps({"findings": []}),
-        },
-    )
-    snap_after_reviewer = statusline.snapshot(conn)
-    assert snap_after_reviewer["critic_run"]["found"] is False
-
-
-def test_snapshot_hides_stale_active_critic_run(conn):
-    """An abandoned active row must not claim a critic is running forever."""
-    run = critic_runs_mod.start(conn, workflow_id="wf-stale-active-critic", provider="codex")
-    old = int(time.time()) - statusline.CRITIC_ACTIVE_MAX_AGE_SECONDS - 10
-    conn.execute(
-        "UPDATE critic_runs SET updated_at = ?, started_at = ? WHERE run_id = ?",
-        (old, old, run["run_id"]),
-    )
-    snap = statusline.snapshot(conn)
-    assert snap["critic_run"]["found"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -282,7 +154,7 @@ def test_snapshot_reflects_active_agent(conn):
 
 def test_snapshot_no_active_agent_after_deactivate(conn):
     """After deactivate(), active_agent fields go None."""
-    markers_mod.set_active(conn, "agent-007", "reviewer")
+    markers_mod.set_active(conn, "agent-007", "tester")
     markers_mod.deactivate(conn, "agent-007")
     snap = statusline.snapshot(conn)
     assert snap["active_agent"] is None
@@ -334,81 +206,67 @@ def test_snapshot_worktree_fields_have_correct_keys(conn):
 # ---------------------------------------------------------------------------
 
 
-def test_snapshot_keeps_dispatch_cycle_keys_with_none_after_retirement(conn):
-    """DEC-CATEGORY-C-DISPATCH-RETIRE-001: dispatch_cycles is retired.
-
-    The dispatch_initiative and dispatch_cycle_id keys remain in the snapshot
-    dict with their None defaults for schema stability (downstream HUD
-    consumers check key presence, not value truthiness).
-    """
+def test_snapshot_reflects_active_dispatch_cycle(conn):
+    """Snapshot surfaces dispatch_initiative, dispatch_cycle_id for active cycle."""
+    cid = dispatch_mod.start_cycle(conn, "INIT-002")
     snap = statusline.snapshot(conn)
-    assert snap["dispatch_initiative"] is None
-    assert snap["dispatch_cycle_id"] is None
+    assert snap["dispatch_initiative"] == "INIT-002"
+    assert snap["dispatch_cycle_id"] == cid
 
 
-def test_snapshot_dispatch_status_from_completion_reviewer_ready(conn):
+def test_snapshot_dispatch_status_from_completion_tester_ready(conn):
     """dispatch_status is derived from completion records, not dispatch_queue.
 
-    DEC-WS6-001: A reviewer completion with verdict 'ready_for_guardian' must
+    DEC-WS6-001: A tester completion with verdict 'ready_for_guardian' must
     produce dispatch_status == 'guardian'. The queue is not consulted.
-    Phase 8 Slice 11: tester role retired — reviewer is the sole evaluator.
     """
-    import json as _json
     completions_mod.submit(
         conn,
         lease_id="lease-001",
         workflow_id="wf-ws6",
-        role="reviewer",
+        role="tester",
         payload={
-            "REVIEW_VERDICT": "ready_for_guardian",
-            "REVIEW_HEAD_SHA": "abc123",
-            "REVIEW_FINDINGS_JSON": _json.dumps({
-                "findings": [
-                    {"severity": "note", "title": "ok", "detail": "looks good"},
-                ],
-            }),
+            "EVAL_VERDICT": "ready_for_guardian",
+            "EVAL_TESTS_PASS": "yes",
+            "EVAL_NEXT_ROLE": "guardian",
+            "EVAL_HEAD_SHA": "abc123",
         },
     )
     snap = statusline.snapshot(conn)
     assert snap["dispatch_status"] == "guardian"
     assert snap["dispatch_workflow"] == "wf-ws6"
-    assert snap["dispatch_from_role"] == "reviewer"
+    assert snap["dispatch_from_role"] == "tester"
     assert snap["dispatch_from_verdict"] == "ready_for_guardian"
 
 
-def test_snapshot_dispatch_status_from_completion_reviewer_needs_changes(conn):
-    """Reviewer completion with 'needs_changes' routes back to implementer.
-    Phase 8 Slice 11: tester role retired — reviewer is the sole evaluator.
-    """
-    import json as _json
+def test_snapshot_dispatch_status_from_completion_tester_needs_changes(conn):
+    """Tester completion with 'needs_changes' routes back to implementer."""
     completions_mod.submit(
         conn,
         lease_id="lease-002",
         workflow_id="wf-ws6b",
-        role="reviewer",
+        role="tester",
         payload={
-            "REVIEW_VERDICT": "needs_changes",
-            "REVIEW_HEAD_SHA": "def456",
-            "REVIEW_FINDINGS_JSON": _json.dumps({
-                "findings": [
-                    {"severity": "blocking", "title": "bug", "detail": "fix this"},
-                ],
-            }),
+            "EVAL_VERDICT": "needs_changes",
+            "EVAL_TESTS_PASS": "no",
+            "EVAL_NEXT_ROLE": "implementer",
+            "EVAL_HEAD_SHA": "def456",
         },
     )
     snap = statusline.snapshot(conn)
     assert snap["dispatch_status"] == "implementer"
-    assert snap["dispatch_from_role"] == "reviewer"
+    assert snap["dispatch_from_role"] == "tester"
     assert snap["dispatch_from_verdict"] == "needs_changes"
 
 
 def test_snapshot_dispatch_status_none_when_no_completion(conn):
     """No completion records => dispatch_status is None.
 
-    DEC-WS6-001 + DEC-CATEGORY-C-DISPATCH-RETIRE-001: queue-based lookup is
-    gone and the dispatch_queue table has been retired. Without a completion
-    record, all dispatch fields default to None.
+    DEC-WS6-001: queue-based lookup is gone. Without a completion record,
+    all dispatch fields are None regardless of queue contents.
     """
+    # Enqueue an item — must NOT influence dispatch_status
+    dispatch_mod.enqueue(conn, "implementer", ticket="TKT-011")
     snap = statusline.snapshot(conn)
     assert snap["dispatch_status"] is None
     assert snap["dispatch_workflow"] is None
@@ -496,60 +354,56 @@ def test_snapshot_at_is_current_epoch(conn):
 def test_snapshot_full_production_sequence(conn):
     """Exercises the complete production state sequence through snapshot().
 
-    Production path (DEC-WS6-001 / W-CONV-4 / DEC-CATEGORY-C-PROOF-RETIRE-001):
-    reviewer submits a valid completion with ready_for_guardian -> implementer
-    marker is set -> worktree registered -> events emitted.  snapshot()
-    must reflect all of these in a single call.
+    Production path (DEC-WS6-001 / W-CONV-4): tester submits a valid completion
+    with ready_for_guardian -> implementer marker is set -> worktree registered
+    -> dispatch cycle active -> proof written to storage (not displayed) ->
+    events emitted.  snapshot() must reflect all of these in a single call.
     dispatch_status must be derived from the completion record (not the queue).
-    proof_state fields must NOT appear in the snapshot — the underlying
-    proof_state storage was retired under Category C bundle 1.
-    dispatch_queue / dispatch_cycles were retired under Category C bundle 2;
-    dispatch_initiative and dispatch_cycle_id remain as None in the snapshot
-    for schema stability.
-    Phase 8 Slice 11: tester retired — reviewer is the sole evaluator.
+    proof_state must NOT appear in the snapshot (W-CONV-4).
 
     This is the compound-interaction test: completions.py, markers.py,
-    worktrees.py, events.py, and statusline.py all collaborate — snapshot()
-    synthesizes them into one coherent projection.
+    worktrees.py, dispatch.py, proof.py (storage only), events.py, and
+    statusline.py all collaborate — snapshot() synthesizes them into one
+    coherent projection with proof display removed.
     """
-    import json as _json
+    # 1. Start a dispatch cycle
+    cid = dispatch_mod.start_cycle(conn, "INIT-002")
 
-    # 1. Submit a valid reviewer completion — this is now the routing authority
+    # 2. Submit a valid tester completion — this is now the routing authority
     #    (DEC-WS6-001). The queue is NOT enqueued; dispatch_status is derived
-    #    from this record via determine_next_role("reviewer", "ready_for_guardian")
+    #    from this record via determine_next_role("tester", "ready_for_guardian")
     #    => "guardian".
     completions_mod.submit(
         conn,
         lease_id="lease-tkt011",
         workflow_id="TKT-011",
-        role="reviewer",
+        role="tester",
         payload={
-            "REVIEW_VERDICT": "ready_for_guardian",
-            "REVIEW_HEAD_SHA": "abc123",
-            "REVIEW_FINDINGS_JSON": _json.dumps({
-                "findings": [
-                    {"severity": "note", "title": "ok", "detail": "approved"},
-                ],
-            }),
+            "EVAL_VERDICT": "ready_for_guardian",
+            "EVAL_TESTS_PASS": "yes",
+            "EVAL_NEXT_ROLE": "guardian",
+            "EVAL_HEAD_SHA": "abc123",
         },
     )
 
-    # 2. Set active agent marker
+    # 3. Set active agent marker
     markers_mod.set_active(conn, "agent-tkt011", "implementer")
 
-    # 3. Register a worktree
+    # 4. Register a worktree
     worktrees_mod.register(conn, "/wt/tkt-011", "feature/tkt-011", ticket="TKT-011")
 
-    # 4. Emit a couple events
+    # 5. Write proof to storage — must NOT appear in snapshot (W-CONV-4)
+    proof_mod.set_status(conn, "TKT-011", "pending")
+
+    # 6. Emit a couple events
     events_mod.emit(conn, "worktree.registered", detail="/wt/tkt-011")
-    events_mod.emit(conn, "marker.set", detail="implementer")
+    events_mod.emit(conn, "proof.set", detail="pending")
 
     # Now take a snapshot and verify every domain is reflected
     snap = statusline.snapshot(conn)
 
     assert snap["status"] == "ok"
-    # Proof fields must not appear (display removed in W-CONV-4; storage
-    # removed in DEC-CATEGORY-C-PROOF-RETIRE-001).
+    # W-CONV-4: proof fields must not appear even with live proof_state data
     assert "proof_status" not in snap
     assert "proof_workflow" not in snap
     assert snap["active_agent"] == "implementer"
@@ -560,15 +414,13 @@ def test_snapshot_full_production_sequence(conn):
     # dispatch_status comes from completion record, not queue (DEC-WS6-001)
     assert snap["dispatch_status"] == "guardian"
     assert snap["dispatch_workflow"] == "TKT-011"
-    assert snap["dispatch_from_role"] == "reviewer"
+    assert snap["dispatch_from_role"] == "tester"
     assert snap["dispatch_from_verdict"] == "ready_for_guardian"
-    # DEC-CATEGORY-C-DISPATCH-RETIRE-001: dispatch_cycles table retired;
-    # these keys remain as None for schema stability.
-    assert snap["dispatch_initiative"] is None
-    assert snap["dispatch_cycle_id"] is None
+    assert snap["dispatch_initiative"] == "INIT-002"
+    assert snap["dispatch_cycle_id"] == cid
     assert snap["recent_event_count"] == 2
     assert len(snap["recent_events"]) == 2
-    assert snap["recent_events"][0]["type"] == "marker.set"
+    assert snap["recent_events"][0]["type"] == "proof.set"
     # DEC-SL-160: errors list is empty when all sections succeed
     assert snap["errors"] == []
     assert snap["status"] == "ok"
@@ -627,7 +479,7 @@ class TestPartialFailureReporting:
 
         # Populate eval and markers before dropping worktrees.
         eval_mod.set_status(c, "wf-partial", "pending")
-        markers_mod.set_active(c, "agent-partial", "reviewer")
+        markers_mod.set_active(c, "agent-partial", "tester")
 
         c.execute("DROP TABLE worktrees")
         c.commit()
@@ -637,7 +489,7 @@ class TestPartialFailureReporting:
 
         # Sections before the fault must still be present.
         assert snap["eval_status"] == "pending"
-        assert snap["active_agent"] == "reviewer"
+        assert snap["active_agent"] == "tester"
         # Worktrees section failed — count stays at safe default.
         assert snap["worktree_count"] == 0
 
@@ -714,26 +566,6 @@ class TestLastReview:
         snap = statusline.snapshot(conn)
         assert snap["last_review"]["reviewed"] is True
         assert snap["last_review"]["reviewer"] == "codex"
-
-    def test_last_review_provider_detail_sets_reviewer_name(self, conn):
-        """Provider in review detail surfaces Gemini/reviewer-subagent visibility."""
-        import runtime.core.evaluation as eval_mod
-
-        eval_mod.set_status(conn, "wf-test", "pending")
-        conn.execute(
-            "UPDATE evaluation_state SET updated_at = updated_at - 2 WHERE workflow_id = 'wf-test'"
-        )
-        conn.commit()
-
-        events_mod.emit(
-            conn,
-            "codex_stop_review",
-            source="workflow:wf-test",
-            detail="VERDICT: ALLOW - workflow=wf-test | provider=gemini | work looks good",
-        )
-        snap = statusline.snapshot(conn)
-        assert snap["last_review"]["reviewed"] is True
-        assert snap["last_review"]["reviewer"] == "gemini"
 
     def test_last_review_block_verdict(self, conn):
         """BLOCK verdict maps to reviewed=True, verdict='BLOCK'.

@@ -24,7 +24,7 @@
 #   100  branch_guard       — block source writes on main/master
 #   200  write_who          — only implementer may write source files
 #   250  enforcement_gap    — deny persistent linter gaps
-#   300  plan_guard         — requires CAN_WRITE_GOVERNANCE for governance markdown or constitution-level files
+#   300  plan_guard         — only planner may write governance markdown
 #   400  plan_exists        — MASTER_PLAN.md must exist + staleness gate
 #   500  plan_immutability  — permanent sections may not be rewritten
 #   600  decision_log       — decision log entries are append-only
@@ -46,23 +46,18 @@ source "$HOOKS_DIR/lib/hook-safety.sh"
 # shellcheck disable=SC2329  # _hook_main is invoked indirectly via run_fail_closed
 _hook_main() {
     HOOK_INPUT=$(read_input)
-    # Bootstrap only: bind the runtime call to the event target before
-    # cc_policy resolves state.db. Path semantics still live in
-    # runtime.core.hook_envelope and cc-policy evaluate.
-    seed_project_dir_from_hook_payload_cwd "$HOOK_INPUT"
     FILE_PATH=$(get_field '.tool_input.file_path')
     if [[ -z "$FILE_PATH" ]]; then
         _mark_hook_responded
         exit 0
     fi
 
-    # Resolve actor context for the policy engine from the runtime-owned hook
-    # envelope. The shell adapter only seeds the DB/marker lookup; evaluate will
-    # rebuild the same envelope and pass its normalized target_path to policies.
-    _PROJECT_ROOT=$(hook_payload_project_root "$HOOK_INPUT" 2>/dev/null || echo "")
-    if [[ -n "$_PROJECT_ROOT" && -d "$_PROJECT_ROOT" ]]; then
-        export CLAUDE_PROJECT_DIR="$_PROJECT_ROOT"
-    fi
+    # Resolve actor context for the policy engine.
+    # File-path-rooted project root (fix #468): avoid CWD-based detect_project_root()
+    # for the same reason branch-guard.sh and write-guard.sh resolved from file path.
+    _FILE_DIR=$(dirname "$FILE_PATH")
+    [[ ! -d "$_FILE_DIR" ]] && _FILE_DIR=$(dirname "$_FILE_DIR")
+    _PROJECT_ROOT=$(git -C "$_FILE_DIR" rev-parse --show-toplevel 2>/dev/null || detect_project_root)
 
     ACTOR_ROLE=$(current_active_agent_role "$_PROJECT_ROOT" 2>/dev/null || echo "")
 
@@ -70,7 +65,8 @@ _hook_main() {
     # cc-policy evaluate reads JSON from stdin and returns hookSpecificOutput JSON.
     EVAL_INPUT=$(printf '%s' "$HOOK_INPUT" | jq \
         --arg role "$ACTOR_ROLE" \
-        '. + {event_type: (.tool_name // "Write"), tool_name: (.tool_name // "Write"), actor_role: $role, actor_id: ""}')
+        --arg root "$_PROJECT_ROOT" \
+        '. + {event_type: "Write", tool_name: (.tool_name // "Write"), actor_role: $role, actor_id: "", cwd: $root}')
 
     # Call the policy engine. cc_policy is defined in runtime-bridge.sh (sourced via context-lib.sh).
     #
@@ -106,6 +102,7 @@ _hook_main() {
                 "reason": $reason,
                 "policy_name": "pre_write_adapter",
                 "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
                     "permissionDecision": "deny",
                     "permissionDecisionReason": $reason,
                     "blockingHook": "pre_write_adapter"
@@ -123,8 +120,6 @@ _hook_main() {
         _obs_accum guard_denial 1 "{\"policy\":\"${_pw_policy}\",\"hook\":\"pre-write\"}"
     fi
 
-    emit_runtime_notification "$RESULT" "$HOOKS_DIR"
-    RESULT=$(strip_runtime_notification "$RESULT")
     printf '%s\n' "$RESULT"
 }
 

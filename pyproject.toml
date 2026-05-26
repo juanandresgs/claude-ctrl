@@ -15,7 +15,6 @@ ignore = ["E501"]
 
 [tool.pytest.ini_options]
 addopts = "--strict-markers"
-testpaths = ["tests"]
 markers = [
     "fast: fast-feedback Python tests",
     "slow: slower Python integration tests",

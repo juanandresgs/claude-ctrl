@@ -4,8 +4,7 @@
 Title: write_mock_gate tests verify mock detection logic via pure function calls
 Status: accepted
 Rationale: write_mock_gate is a pure function of tool_input content — no DB I/O.
-  Tests inject hand-crafted PolicyRequest with content and policy_strikes state.
-  The compound test
+  Tests inject hand-crafted PolicyRequest with content. The compound test
   exercises the full PolicyRegistry path to prove integration wiring is correct.
 
 Production sequence:
@@ -39,7 +38,6 @@ def _make_context(project_root: str = "/proj") -> PolicyContext:
         test_state=None,
         binding=None,
         dispatch_phase=None,
-        policy_strikes={},
     )
 
 
@@ -47,16 +45,12 @@ def _write_req(
     file_path: str,
     content: str,
     project_root: str = "/proj",
-    policy_strikes: dict | None = None,
 ) -> PolicyRequest:
-    ctx = _make_context(project_root=project_root)
-    if policy_strikes is not None:
-        ctx.policy_strikes = policy_strikes
     return PolicyRequest(
         event_type="Write",
         tool_name="Write",
         tool_input={"file_path": file_path, "content": content},
-        context=ctx,
+        context=_make_context(project_root=project_root),
         cwd=project_root,
     )
 
@@ -65,16 +59,12 @@ def _edit_req(
     file_path: str,
     new_string: str,
     project_root: str = "/proj",
-    policy_strikes: dict | None = None,
 ) -> PolicyRequest:
-    ctx = _make_context(project_root=project_root)
-    if policy_strikes is not None:
-        ctx.policy_strikes = policy_strikes
     return PolicyRequest(
         event_type="Edit",
         tool_name="Edit",
         tool_input={"file_path": file_path, "new_string": new_string},
-        context=ctx,
+        context=_make_context(project_root=project_root),
         cwd=project_root,
     )
 
@@ -200,7 +190,13 @@ def test_internal_patch_internal_module_first_strike_feedback(tmp_path):
 
 def test_internal_mock_second_strike_deny(tmp_path):
     """Second internal mock: deny."""
-    strikes = {"mock_gate:internal_mock": {"count": 1}}
+    import time
+
+    # Pre-create strikes file to simulate strike 1
+    strikes_file = tmp_path / ".claude" / ".mock-gate-strikes"
+    strikes_file.parent.mkdir(parents=True)
+    strikes_file.write_text(f"1|{int(time.time())}")
+
     content = (
         "from unittest.mock import MagicMock\n"
         "\n"
@@ -208,30 +204,21 @@ def test_internal_mock_second_strike_deny(tmp_path):
         "    svc = MagicMock()\n"
         "    assert svc.do_thing() is not None\n"
     )
-    result = mock_gate(
-        _write_req(
-            f"{tmp_path}/tests/test_foo.py",
-            content,
-            str(tmp_path),
-            policy_strikes=strikes,
-        )
-    )
+    result = mock_gate(_write_req(f"{tmp_path}/tests/test_foo.py", content, str(tmp_path)))
     assert result is not None
     assert result.action == "deny"
     assert result.policy_name == "mock_gate"
 
 
 def test_strike_count_increments_on_internal_mock(tmp_path):
-    """Strike effect is emitted after each internal mock detection."""
+    """Strike file is created and incremented after each internal mock detection."""
     content = "from unittest.mock import MagicMock\ndef test_x():\n    m = MagicMock()\n"
-    result = mock_gate(_write_req(f"{tmp_path}/tests/test_x.py", content, str(tmp_path)))
+    mock_gate(_write_req(f"{tmp_path}/tests/test_x.py", content, str(tmp_path)))
 
-    assert result is not None
-    strikes = result.effects["policy_strikes"]
-    assert strikes[0]["policy_name"] == "mock_gate"
-    assert strikes[0]["scope_key"] == "internal_mock"
-    assert strikes[0]["count"] == 1
-    assert not (tmp_path / ".claude" / ".mock-gate-strikes").exists()
+    strikes_file = tmp_path / ".claude" / ".mock-gate-strikes"
+    assert strikes_file.exists()
+    count = int(strikes_file.read_text().split("|")[0])
+    assert count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -289,8 +276,14 @@ def test_registry_mock_gate_deny_on_second_strike(tmp_path):
     Production sequence: Claude Write (test file) -> pre-write.sh ->
     cc-policy evaluate -> PolicyRegistry.evaluate() -> mock_gate -> deny.
     """
+    import time
+
     reg = PolicyRegistry()
     reg.register("mock_gate", mock_gate, event_types=["Write", "Edit"], priority=750)
+
+    strikes_file = tmp_path / ".claude" / ".mock-gate-strikes"
+    strikes_file.parent.mkdir(parents=True)
+    strikes_file.write_text(f"1|{int(time.time())}")
 
     content = (
         "from unittest.mock import MagicMock\n"
@@ -298,16 +291,10 @@ def test_registry_mock_gate_deny_on_second_strike(tmp_path):
         "    svc = MagicMock()\n"
         "    assert svc.method() is not None\n"
     )
-    req = _write_req(
-        f"{tmp_path}/tests/test_foo.py",
-        content,
-        str(tmp_path),
-        policy_strikes={"mock_gate:internal_mock": {"count": 1}},
-    )
+    req = _write_req(f"{tmp_path}/tests/test_foo.py", content, str(tmp_path))
     decision = reg.evaluate(req)
     assert decision.action == "deny"
     assert decision.policy_name == "mock_gate"
-    assert decision.effects["policy_strikes"][0]["count"] == 2
 
 
 def test_registry_mock_gate_allows_external_mocks():

@@ -1,6 +1,0 @@
-Legacy ClauDEX stop-loop prompt.
-
-The Codex Stop hook has been removed. Do not re-arm a supervisor turn from
-this prompt. If this file is loaded manually, use `.codex/prompts/claudex_supervisor.txt`
-as review guidance and continue only when there is a live bounded task with a
-deterministic next stage.

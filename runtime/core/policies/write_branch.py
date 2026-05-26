@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Optional
 
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
-from runtime.core.policy_utils import PATH_KIND_SOURCE, classify_policy_path
+from runtime.core.policy_utils import is_skippable_path, is_source_file
 
 
 def branch_guard(request: PolicyRequest) -> Optional[PolicyDecision]:
@@ -33,7 +33,7 @@ def branch_guard(request: PolicyRequest) -> Optional[PolicyDecision]:
       - File is under {project_root}/.claude/ (meta-infrastructure)
       - File is MASTER_PLAN.md
       - File is not a source file (is_source_file returns False)
-      - File is a skippable path (vendor/build/generated)
+      - File is a skippable path (test/config/vendor/generated)
       - File's directory is not inside a git repo
       - Current branch is not main or master
     """
@@ -46,13 +46,16 @@ def branch_guard(request: PolicyRequest) -> Optional[PolicyDecision]:
     if project_root and file_path.startswith(os.path.join(project_root, ".claude") + os.sep):
         return None
 
-    info = classify_policy_path(
-        file_path,
-        project_root=project_root or "",
-        worktree_path=request.context.worktree_path or "",
-        scratch_roots=request.context.scratchlane_roots,
-    )
-    if info.kind != PATH_KIND_SOURCE:
+    # Skip MASTER_PLAN.md — plans are written on main by design
+    if Path(file_path).name == "MASTER_PLAN.md":
+        return None
+
+    # Skip non-source files
+    if not is_source_file(file_path):
+        return None
+
+    # Skip test/config/vendor/generated paths
+    if is_skippable_path(file_path):
         return None
 
     # Resolve the git repo from the file's directory (fix #468 pattern)
@@ -107,7 +110,10 @@ def branch_guard(request: PolicyRequest) -> Optional[PolicyDecision]:
         reason=(
             f"BLOCKED: Cannot write source code on {branch} branch. "
             "Sacred Practice #2: Main is sacred.\n\n"
-            "Action: Invoke the Guardian agent to create an isolated worktree for this work."
+            "Action: Launch Guardian naturally with provisioning capability. "
+            "Guardian runs `cc-policy worktree provision`; after it reports the "
+            "leased worktree, launch implementer as an ordinary Agent with no "
+            "isolation flag. Do not retry the source edit from the orchestrator."
         ),
         policy_name="branch_guard",
     )

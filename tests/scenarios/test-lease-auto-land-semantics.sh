@@ -56,31 +56,22 @@ run_sub_case_a() {
     (cd "$dir" && git checkout -b "$branch" -q)
     head_sha=$(git -C "$dir" rev-parse HEAD)
 
-    # Schema + guardian:land marker
+    # Schema + marker + v6 landing readiness
     CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
-    CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian:land" --project-root "$dir" >/dev/null 2>&1
-
-    # test-status = pass (Check 9)
-    CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" \
-        test-state set pass --project-root "$dir" --passed 1 --total 1 >/dev/null 2>&1
-
-    # evaluation_state = ready_for_guardian + SHA (Check 10)
-    CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" \
-        evaluation set "$wf_id" "ready_for_guardian" --head-sha "$head_sha" >/dev/null 2>&1
-
-    # workflow binding + scope (Check 12)
-    CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" \
-        workflow bind "$wf_id" "$dir" "$branch" >/dev/null 2>&1
-    CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" \
-        workflow scope-set "$wf_id" --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1
-
-    # dispatch lease (Check 3)
-    CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" \
-        lease issue-for-dispatch "guardian" \
-        --workflow-id "$wf_id" \
-        --worktree-path "$dir" \
-        --branch "$branch" \
-        --allowed-ops '["routine_local","high_risk"]' >/dev/null 2>&1
+    CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" --project-root "$dir" >/dev/null 2>&1
+    CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" workflow bind "$wf_id" "$dir" "$branch" >/dev/null 2>&1
+    CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" workflow scope-set "$wf_id" --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1
+    CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" test-state set pass --project-root "$dir" --head-sha "$head_sha" --passed 1 --total 1 >/dev/null 2>&1
+    reviewer_json=$(CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" stage run-create --workflow-id "$wf_id" --stage-id reviewer --worktree-path "$dir")
+    reviewer_run=$(printf '%s' "$reviewer_json" | jq -r '.stage_run.id')
+    payload=$(jq -nc --arg run "$reviewer_run" --arg sha "$head_sha" '{stage_run_id:$run,stage_id:"reviewer",verdict:"ready_for_guardian",summary:"reviewed",head_sha:$sha,findings:[]}')
+    result=$(CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" stage result-submit "$reviewer_run" --payload "$payload")
+    guardian_run=$(printf '%s' "$result" | jq -r '.next_stage_run.id')
+    lease_meta=$(jq -nc --arg run "$guardian_run" '{stage_run_id:$run}')
+    CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" lease issue-for-dispatch "guardian" \
+        --workflow-id "$wf_id" --worktree-path "$dir" --branch "$branch" \
+        --allowed-ops '["routine_local","high_risk"]' --metadata "$lease_meta" >/dev/null 2>&1
+    CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" stage landing-ready "$guardian_run" >/dev/null 2>&1
 
     local cmd output decision
     cmd="git -C \"$dir\" commit --allow-empty -m 'auto-land with lease'"
@@ -113,7 +104,7 @@ run_sub_case_b() {
     head_sha=$(git -C "$dir" rev-parse HEAD)
 
     CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
-    CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian:land" --project-root "$dir" >/dev/null 2>&1
+    CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" --project-root "$dir" >/dev/null 2>&1
     CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" \
         test-state set pass --project-root "$dir" --passed 1 --total 1 >/dev/null 2>&1
     CLAUDE_POLICY_DB="$db" python3 "$RUNTIME_ROOT/cli.py" \

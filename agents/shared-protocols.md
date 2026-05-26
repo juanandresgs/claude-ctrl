@@ -14,7 +14,7 @@ Safe patterns:
 - Other commands: `(cd .worktrees/<name> && <command>)` — subshell only
 
 Before deleting any directory, ensure the shell is NOT inside it.
-Use `cc-policy worktree retire` to clean up feature worktrees after landing (runtime authority — DEC-WT-RETIRE-001); or navigate to `<project_root>` before any manual directory removal.
+Use `safe_cleanup` from context-lib.sh or `cd <project_root>` first.
 
 Deleting the shell's CWD bricks all Bash operations for the session.
 Unrecoverable without `/clear`.
@@ -39,43 +39,11 @@ Structure your return message as:
 
 Keep it under 1500 tokens.
 
-## Output Contracts
+## Output Contract
 
-### Implementer Trailer
-Every implementer return message must end with:
-```
-IMPL_STATUS: complete|partial|blocked
-IMPL_SCOPE_OK: yes|no
-IMPL_HEAD_SHA: <sha|none>
-```
-
-### Reviewer Trailer
-Every reviewer return message must end with:
-```
-REVIEW_VERDICT: ready_for_guardian|needs_changes|blocked_by_plan
-REVIEW_HEAD_SHA: <current HEAD git sha>
-REVIEW_FINDINGS_JSON: {"findings": []}
-```
-
-These trailers are the deterministic interface between roles. Hooks parse these
-sections — not narrative language.
-
-No lines may appear after the reviewer trailer. The trailer is the terminal
-output of the reviewer role. The runtime projects valid reviewer completions
-into `evaluation_state` for Guardian landing checks.
-
-### Planner Trailer
-Every planner return message must end with:
-```
-PLAN_VERDICT: next_work_item|goal_complete|needs_user_decision|blocked_external
-PLAN_SUMMARY: <one-line summary>
-```
-
-### Guardian Trailer
-```
-LANDING_RESULT: provisioned|committed|merged|pushed|denied|skipped
-OPERATION_CLASS: routine_local|high_risk|admin_recovery
-```
+Canonical v6 roles end with the injected `claude_ctrl_result` fenced JSON block.
+It is the deterministic interface between roles; narrative evidence belongs
+before the block. No lines may appear after the block.
 
 ## Debugging Discipline
 

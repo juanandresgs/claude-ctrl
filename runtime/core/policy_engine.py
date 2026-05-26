@@ -46,44 +46,19 @@ Rationale: Each policy function would otherwise need its own DB connection
   without a database (inject a hand-crafted PolicyContext). The tradeoff is
   that build_context() loads fields that some policies won't use; the load
   is cheap (indexed point reads) and the simplicity wins.
-
-@decision DEC-PE-LEASE-DENY-DIAG-001
-Title: worktree_lease_suppressed_roles carries diagnostic-only lease visibility
-Status: accepted
-Rationale: Incident (cutover-maintenance slice 0022/0023): an orchestrator
-  actor hit `bash_git_who` deny with message "No active dispatch lease for
-  this worktree" while an active guardian lease DID exist on that worktree.
-  Root cause was DEC-PE-EGAP-BUILD-CTX-001: the role-blind worktree_path
-  fallback is intentionally skipped when actor_role is empty or mismatched,
-  so `context.lease` stays None even though a lease row is present. The
-  original deny text pointed operators to re-issue a lease, wasting time —
-  issuance was fine; the problem was actor-role attachment.
-  This field is populated by build_context() as a SIBLING to `context.lease`:
-  when lease resolution ends with lease=None, a diagnostic probe collects
-  the role names of any active leases present on the same worktree_path.
-  `bash_git_who` reads this field to emit a distinct deny message that names
-  the actual problem (role mismatch vs. missing lease). Enforcement posture
-  is UNCHANGED — the field never unlocks operations, never attaches a lease
-  to an unrelated actor, and never affects allow/deny outcomes. It is
-  diagnostics/classification only. The probe is a single indexed read on
-  dispatch_leases keyed on worktree_path, so it adds no measurable cost.
 """
 
 from __future__ import annotations
 
-import json
 import sqlite3
-from dataclasses import dataclass, field, replace
-from pathlib import Path
-from typing import Callable, FrozenSet, Optional
+from dataclasses import dataclass, field
+from typing import Callable, Optional
 
-from runtime.core import scratchlanes as scratchlanes_mod
 from runtime.core.command_intent import BashCommandIntent, build_bash_command_intent
 from runtime.core.policy_utils import (
     current_workflow_id,
     detect_project_root,
     is_claude_meta_repo,
-    is_path_under,
     normalize_path,
 )
 
@@ -109,35 +84,12 @@ class PolicyContext:
     is_meta_repo: bool  # True if ~/.claude
     lease: Optional[dict]  # active lease record, or None
     scope: Optional[dict]  # workflow_scope record, or None
-    eval_state: Optional[dict]  # evaluation_state record, or None
+    eval_state: Optional[dict]  # legacy evaluation_state record, or None
     test_state: Optional[dict]  # test_state record, or None
     binding: Optional[dict]  # workflow_binding record, or None
-    work_item_id: str = ""  # active contract work item for this request
-    landing_grant: Optional[dict] = None  # work_item_grants projection, or None
+    landing_readiness: Optional[dict] = None  # v6 landing readiness aggregate, or None
     dispatch_phase: Optional[str] = None  # derived from completions, or None
     enforcement_config: dict = field(default_factory=dict)  # DEC-CONFIG-AUTHORITY-001
-    enforcement_gaps: tuple[dict, ...] = field(default_factory=tuple)
-    policy_strikes: dict = field(default_factory=dict)
-    # Resolved capability set for actor_role — populated by build_context() via
-    # authority_registry.capabilities_for(resolved_role). Policy functions use
-    # this field instead of raw role-name string comparisons so that capability
-    # gates are the single authority for authorization decisions.
-    capabilities: FrozenSet[str] = field(default_factory=frozenset)
-    # Roles for which an active lease exists on this worktree_path but was
-    # NOT attached to the context because the caller's actor_role did not
-    # match (or was empty — orchestrator path per DEC-PE-EGAP-BUILD-CTX-001).
-    # Populated by build_context() whenever lease resolution ends with
-    # lease=None; empty when no worktree lease exists at all. Diagnostic-only:
-    # policies MUST NOT treat this as a lease substitute — it exists so
-    # downstream deny messages can distinguish "no lease at all" from
-    # "lease exists but the caller cannot attach it" without relaxing the
-    # enforcement contract. See DEC-PE-LEASE-DENY-DIAG-001.
-    worktree_lease_suppressed_roles: FrozenSet[str] = field(default_factory=frozenset)
-    # Active task-local scratchlane roots approved by the user for this
-    # project. Policies use this to distinguish sanctioned artifact work
-    # from real repo source/governance mutations.
-    scratchlane_roots: FrozenSet[str] = field(default_factory=frozenset)
-    session_id: str = ""
 
 
 @dataclass
@@ -303,28 +255,6 @@ class PolicyRegistry:
           - No deny and no feedback → default allow
         """
         last_feedback: Optional[PolicyDecision] = None
-        pending_effects: dict = {}
-
-        def merge_effects(base: dict, update: Optional[dict]) -> dict:
-            if not update:
-                return base
-            merged = dict(base)
-            for key, value in update.items():
-                if key == "policy_strikes":
-                    existing = list(merged.get(key) or [])
-                    if isinstance(value, list):
-                        existing.extend(value)
-                    else:
-                        existing.append(value)
-                    merged[key] = existing
-                else:
-                    merged[key] = value
-            return merged
-
-        def with_pending_effects(decision: PolicyDecision) -> PolicyDecision:
-            if not pending_effects:
-                return decision
-            return replace(decision, effects=pending_effects)
 
         for entry in self._entries:
             if not entry.enabled:
@@ -337,10 +267,8 @@ class PolicyRegistry:
             if result is None:
                 continue
 
-            pending_effects = merge_effects(pending_effects, result.effects)
-
             if result.action == "deny":
-                return with_pending_effects(result)
+                return result
 
             if result.action == "feedback":
                 last_feedback = result
@@ -351,13 +279,12 @@ class PolicyRegistry:
             # unconditionally allow should return None instead.
 
         if last_feedback is not None:
-            return with_pending_effects(last_feedback)
+            return last_feedback
 
         return PolicyDecision(
             action="allow",
             reason="all policies passed",
             policy_name="default",
-            effects=pending_effects or None,
         )
 
     def explain(self, request: PolicyRequest) -> list[PolicyEvaluation]:
@@ -427,8 +354,6 @@ def build_context(
     cwd: str,
     actor_role: str = "",
     actor_id: str = "",
-    actor_workflow_id: str = "",
-    session_id: str = "",
     project_root: str = "",
 ) -> PolicyContext:
     """Resolve all SQLite state into a PolicyContext in one shot.
@@ -442,9 +367,8 @@ def build_context(
       - test_state: last test run status
       - completions: derive dispatch_phase from latest completion
 
-    actor_role, actor_id, and actor_workflow_id are overrides — the caller
-    (cli.py) passes them from the JSON payload. If not provided, they're
-    inferred from the DB.
+    actor_role and actor_id are overrides — the caller (cli.py) passes them
+    from the JSON payload. If not provided, they're inferred from the DB.
 
     project_root — when provided, skips detect_project_root() entirely and
       uses this value directly. Used by _handle_evaluate when the caller
@@ -468,7 +392,7 @@ def build_context(
     @status accepted
     @rationale The original fallback selected ANY active lease matching
       worktree_path, regardless of role. This meant an orchestrator (actor_role="")
-      or a non-guardian role could silently inherit a guardian lease just by sharing the same
+      or tester could silently inherit a guardian lease just by sharing the same
       worktree directory, bypassing WHO enforcement entirely. The fix: when
       actor_role is non-empty, restrict the fallback query to leases WHERE
       role = actor_role. When actor_role is empty (orchestrator), the fallback
@@ -483,141 +407,31 @@ def build_context(
     # (e.g. from CLAUDE_PROJECT_DIR or a symlinked worktree path in the hook
     # payload). DEC-CONV-001: always apply normalize_path at every boundary.
     project_root = normalize_path(project_root)
-    # Normalize the target cwd too. Linked worktree leases and workflow
-    # bindings are persisted as canonical realpaths; querying with the raw hook
-    # cwd made hook evaluation diverge from direct CLI evaluation.
-    cwd = normalize_path(cwd or project_root)
-    actor_workflow_id = (actor_workflow_id or "").strip()
     is_meta = is_claude_meta_repo(project_root)
 
     # --- Resolve active lease ---
-    target_paths = tuple(dict.fromkeys(path for path in (cwd, project_root) if path))
-
-    def _dispatch_phase_for_workflow(workflow_id: str) -> Optional[str]:
-        if not workflow_id:
-            return None
-        row = conn.execute(
-            "SELECT role, verdict FROM completion_records "
-            "WHERE workflow_id = ? "
-            "ORDER BY created_at DESC, id DESC LIMIT 1",
-            (workflow_id,),
-        ).fetchone()
-        if not row:
-            return None
-        return f"{row['role']}:{row['verdict']}"
-
-    def _shared_git_root(path: str) -> str:
-        if not path:
-            return ""
-        try:
-            from runtime.core.config import _resolve_shared_git_root
-
-            root = _resolve_shared_git_root(Path(path))
-            return normalize_path(str(root)) if root is not None else ""
-        except Exception:
-            return ""
-
-    def _fetch_active_lease(*, role: str = "", agent_id: str = "") -> Optional[dict]:
-        clauses = ["status = 'active'"]
-        params: list[object] = []
-        if agent_id:
-            clauses.append("agent_id = ?")
-            params.append(agent_id)
-        if role:
-            clauses.append("role = ?")
-            params.append(role)
-        if actor_workflow_id:
-            clauses.append("workflow_id = ?")
-            params.append(actor_workflow_id)
-        if target_paths:
-            placeholders = ",".join("?" for _ in target_paths)
-            clauses.append(f"worktree_path IN ({placeholders})")
-            params.extend(target_paths)
-        row = conn.execute(
-            f"SELECT * FROM dispatch_leases WHERE {' AND '.join(clauses)} LIMIT 1",
-            params,
-        ).fetchone()
-        return dict(row) if row else None
-
-    def _fetch_guardian_land_shared_root_lease() -> Optional[dict]:
-        """Attach a claimed guardian:land lease to its shared base worktree.
-
-        A landing may need to commit in both the reviewed feature worktree and
-        the shared/base worktree. The lease remains single-worktree and
-        single-agent; this bridge only lets that same claimed lease authorize
-        the shared git root for the same workflow. It deliberately does not
-        authorize unrelated sibling worktrees.
-        """
-        if not actor_id or not actor_role or not actor_workflow_id:
-            return None
-
-        from runtime.core.authority_registry import (
-            canonical_actor_stage as _canonical_actor_stage,
-        )
-        from runtime.core.authority_registry import (
-            lease_role_for_stage as _lease_role_for_stage,
-        )
-
-        dispatch_phase_hint = _dispatch_phase_for_workflow(actor_workflow_id)
-        canonical_actor = _canonical_actor_stage(actor_role, dispatch_phase_hint)
-        if canonical_actor != "guardian:land":
-            return None
-
-        lease_role = _lease_role_for_stage(canonical_actor)
-        if not lease_role:
-            return None
-
-        rows = conn.execute(
-            "SELECT * FROM dispatch_leases "
-            "WHERE status = 'active' "
-            "AND agent_id = ? "
-            "AND workflow_id = ? "
-            "AND role = ? "
-            "ORDER BY issued_at DESC, lease_id DESC",
-            (actor_id, actor_workflow_id, lease_role),
-        ).fetchall()
-        target_set = set(target_paths)
-        for row in rows:
-            candidate = dict(row)
-            shared_root = _shared_git_root(candidate.get("worktree_path", "") or "")
-            if shared_root and shared_root in target_set:
-                return candidate
-        return None
-
     lease: Optional[dict] = None
     if actor_id:
-        lease = _fetch_active_lease(agent_id=actor_id)
-        if lease is None and not actor_workflow_id:
-            # Backward-compatible path for older callers that only supply an
-            # agent_id. Workflow-aware hook payloads intentionally do not take
-            # this broad fallback because the command target must match the
-            # lease authority.
-            row = conn.execute(
-                "SELECT * FROM dispatch_leases "
-                "WHERE agent_id = ? AND status = 'active' LIMIT 1",
-                (actor_id,),
-            ).fetchone()
-            if row:
-                lease = dict(row)
+        row = conn.execute(
+            "SELECT * FROM dispatch_leases WHERE agent_id = ? AND status = 'active' LIMIT 1",
+            (actor_id,),
+        ).fetchone()
+        if row:
+            lease = dict(row)
 
     if lease is None and actor_role:
         # Role-aware fallback (DEC-PE-EGAP-BUILD-CTX-001): only pick up a
         # worktree-matched lease when it belongs to the actor's own role.
-        # This prevents an orchestrator (actor_role="") or a non-guardian role from
+        # This prevents an orchestrator (actor_role="") or a tester from
         # inheriting a guardian lease that happens to share the same worktree_path.
-        lease = _fetch_active_lease(role=actor_role)
-
-        # Stage variant match (DEC-WHO-STAGE-LEASE-MATCH-001): compound stage
-        # IDs like "guardian:land" won't match a lease with role="guardian" via
-        # the literal query above. Bridge through lease_role_for_stage to find
-        # the base role and retry.
-        if lease is None:
-            from runtime.core.authority_registry import lease_role_for_stage as _lrfs
-            _base_role = _lrfs(actor_role)
-            if _base_role and _base_role != actor_role:
-                lease = _fetch_active_lease(role=_base_role)
-        if lease is None:
-            lease = _fetch_guardian_land_shared_root_lease()
+        row = conn.execute(
+            "SELECT * FROM dispatch_leases WHERE status = 'active' "
+            "AND (worktree_path = ? OR worktree_path = ?) "
+            "AND role = ? LIMIT 1",
+            (cwd, project_root, actor_role),
+        ).fetchone()
+        if row:
+            lease = dict(row)
     elif lease is None and not actor_role:
         # No actor_role (orchestrator path): do NOT inherit a role-specific
         # lease via the worktree_path fallback. Doing so would give the
@@ -626,27 +440,6 @@ def build_context(
         # The orchestrator accesses git state read-only; it must not hold a
         # lease that authorises write operations.
         pass  # lease stays None — downstream policies will apply no-lease deny
-
-    # --- Diagnostic probe: worktree_lease_suppressed_roles ---
-    # When lease resolution ended with lease=None, probe whether an active
-    # lease EXISTS on this worktree_path under some other role.  The field is
-    # diagnostic-only and used by bash_git_who to emit a clearer deny message
-    # distinguishing "no lease at all" from "lease exists but caller cannot
-    # attach it" — it does NOT change the allow/deny decision. Enforcement
-    # remains governed by the actual lease attachment above.
-    # See DEC-PE-LEASE-DENY-DIAG-001.
-    suppressed_roles: FrozenSet[str] = frozenset()
-    if lease is None:
-        placeholders = ",".join("?" for _ in target_paths)
-        path_clause = f"AND worktree_path IN ({placeholders})" if target_paths else ""
-        rows = conn.execute(
-            "SELECT role FROM dispatch_leases WHERE status = 'active' "
-            f"{path_clause}",
-            target_paths,
-        ).fetchall()
-        _roles = {(r["role"] if isinstance(r, sqlite3.Row) else r[0]) or "" for r in rows}
-        _roles.discard("")
-        suppressed_roles = frozenset(_roles)
 
     # --- Resolve role / agent_id from lease or marker ---
     resolved_role = actor_role
@@ -675,15 +468,11 @@ def build_context(
                 resolved_role = _marker.get("role") or ""
             if not resolved_id:
                 resolved_id = _marker.get("agent_id") or ""
-            if not actor_workflow_id:
-                actor_workflow_id = _marker.get("workflow_id") or ""
 
     # --- Workflow ID ---
     workflow_id = ""
     if lease:
         workflow_id = lease.get("workflow_id", "")
-    if not workflow_id and actor_workflow_id:
-        workflow_id = actor_workflow_id
     if not workflow_id:
         workflow_id = current_workflow_id(project_root)
 
@@ -703,8 +492,6 @@ def build_context(
         worktree_path = lease.get("worktree_path", cwd) or cwd
     elif binding:
         worktree_path = binding.get("worktree_path", cwd) or cwd
-    elif project_root and is_path_under(project_root, cwd):
-        worktree_path = project_root
 
     # --- Branch ---
     branch = ""
@@ -756,6 +543,37 @@ def build_context(
     if row:
         test_state = dict(row)
 
+    # --- v6 landing readiness aggregate ---
+    landing_readiness: Optional[dict] = None
+    lease_metadata = {}
+    if lease:
+        try:
+            import json as _json
+
+            lease_metadata = _json.loads(lease.get("metadata_json") or "{}")
+        except Exception:
+            lease_metadata = {}
+    stage_run_id = lease_metadata.get("stage_run_id") if isinstance(lease_metadata, dict) else ""
+    if stage_run_id:
+        row = conn.execute(
+            "SELECT * FROM v6_landing_readiness WHERE guardian_stage_run_id = ? LIMIT 1",
+            (stage_run_id,),
+        ).fetchone()
+        if row:
+            landing_readiness = dict(row)
+    if landing_readiness is None and workflow_id:
+        row = conn.execute(
+            """
+            SELECT * FROM v6_landing_readiness
+            WHERE workflow_id = ?
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (workflow_id,),
+        ).fetchone()
+        if row:
+            landing_readiness = dict(row)
+
     # --- Dispatch phase from completions ---
     # @decision DEC-PE-007
     # Title: dispatch_phase is workflow-scoped, never global
@@ -766,78 +584,14 @@ def build_context(
     #   accepts workflow_id). We follow the same scoping here: only query when
     #   workflow_id is known, and filter to that workflow_id. This is consistent with
     #   how scope, eval_state, and lease are all resolved with workflow_id guards above.
-    # DEC-WHO-DISPATCH-PHASE-TIEBREAK-001: align the latest-completion ORDER
-    # BY with the completion authority (completions.latest — "created_at DESC,
-    # id DESC"). Without the id tiebreak, two completions in the same workflow
-    # written in the same second (e.g. a reviewer verdict and a planner
-    # verdict flushed in a single tick) can resolve nondeterministically.
-    # Guardian-stage canonicalization depends on this row; a wrong row would
-    # misgrant landing-vs-provision capability.
-    dispatch_phase = _dispatch_phase_for_workflow(workflow_id) if workflow_id else None
-
-    # --- Work-item id + landing grant ---
-    # The dispatch contract is the primary source. It is copied into both the
-    # dispatch_attempts ledger and the lease metadata so either surface can
-    # recover the exact work item without scanning globally-active rows.
-    work_item_id = ""
-    if lease:
-        lease_id = lease.get("lease_id", "") or ""
-        if lease_id:
-            try:
-                row = conn.execute(
-                    """
-                    SELECT work_item_id
-                    FROM dispatch_attempts
-                    WHERE lease_id = ? AND work_item_id IS NOT NULL AND work_item_id != ''
-                    ORDER BY created_at DESC, id DESC
-                    LIMIT 1
-                    """,
-                    (lease_id,),
-                ).fetchone()
-                if row:
-                    work_item_id = row["work_item_id"] or ""
-            except sqlite3.OperationalError:
-                work_item_id = ""
-        if not work_item_id:
-            try:
-                metadata = json.loads(lease.get("metadata_json") or "{}")
-                if isinstance(metadata, dict):
-                    work_item_id = str(metadata.get("work_item_id") or "")
-            except (json.JSONDecodeError, TypeError):
-                work_item_id = ""
-
-    if not work_item_id and workflow_id:
-        # Legacy fallback: only resolve from work_items when exactly one row is
-        # active for the workflow. Multiple active rows are ambiguous and must
-        # be resolved by an explicit dispatch contract.
-        try:
-            rows = conn.execute(
-                """
-                SELECT work_item_id
-                FROM work_items
-                WHERE workflow_id = ?
-                  AND status IN ('in_progress', 'in_review', 'ready_to_land')
-                ORDER BY created_at ASC, work_item_id ASC
-                """,
-                (workflow_id,),
-            ).fetchall()
-            if len(rows) == 1:
-                work_item_id = rows[0]["work_item_id"] or ""
-        except sqlite3.OperationalError:
-            work_item_id = ""
-
-    landing_grant: Optional[dict] = None
-    if workflow_id and work_item_id:
-        try:
-            from runtime.core import work_item_grants as _wig_mod
-
-            landing_grant = _wig_mod.effective(
-                conn,
-                workflow_id=workflow_id,
-                work_item_id=work_item_id,
-            ).as_dict()
-        except Exception:
-            landing_grant = None
+    dispatch_phase: Optional[str] = None
+    if workflow_id:
+        row = conn.execute(
+            "SELECT role, verdict FROM completion_records WHERE workflow_id = ? ORDER BY created_at DESC LIMIT 1",
+            (workflow_id,),
+        ).fetchone()
+        if row:
+            dispatch_phase = f"{row['role']}:{row['verdict']}"
 
     # --- Enforcement config (DEC-CONFIG-AUTHORITY-001) ---
     # Collapse all enforcement_config rows with scope precedence:
@@ -862,59 +616,8 @@ def build_context(
     except Exception:
         pass  # fail-safe: empty dict → policies use built-in defaults
 
-    # --- Enforcement gaps ---
-    # Structured runtime state consumed by write_enforcement_gap. Kept in the
-    # context so policies remain pure and never read project-local flatfiles.
-    enforcement_gaps: tuple[dict, ...] = ()
-    try:
-        from runtime.core import enforcement_gaps as _eg_mod
-
-        enforcement_gaps = tuple(_eg_mod.list_open(conn, project_root=project_root))
-    except Exception:
-        enforcement_gaps = ()
-
-    # --- Policy strike counters ---
-    # Escalating warn-then-deny policies read strike state from context and
-    # return effects for cli.py to persist, preserving policy purity while
-    # keeping counters in state.db.
-    policy_strikes: dict = {}
-    try:
-        from runtime.core import policy_strikes as _ps_mod
-
-        policy_strikes = _ps_mod.list_for_project(conn, project_root=project_root)
-    except Exception:
-        policy_strikes = {}
-
-    # --- Scratchlane permits (task-local artifact roots) ---
-    scratchlane_roots: FrozenSet[str] = frozenset()
-    try:
-        scratchlane_roots = frozenset(
-            scratchlanes_mod.active_roots(
-                conn,
-                project_root,
-                session_id=session_id,
-                workflow_id=workflow_id,
-            )
-        )
-    except Exception:
-        scratchlane_roots = frozenset()
-
-    from runtime.core.authority_registry import (
-        canonical_actor_stage as _canonical_actor_stage,
-    )
-    from runtime.core.authority_registry import (
-        capabilities_for as _capabilities_for,
-    )
-
-    # DEC-WHO-GUARDIAN-CANONICALIZE-001: live dispatch emits bare "guardian"
-    # for both provision and land modes. Promote to the compound stage using
-    # dispatch_phase and stage_registry.next_stage() — the existing routing
-    # authority — so context.actor_role and context.capabilities reflect the
-    # actual guardian mode. Non-guardian roles pass through unchanged.
-    canonical_role = _canonical_actor_stage(resolved_role, dispatch_phase)
-
     return PolicyContext(
-        actor_role=canonical_role,
+        actor_role=resolved_role,
         actor_id=resolved_id,
         workflow_id=workflow_id,
         worktree_path=worktree_path,
@@ -926,16 +629,9 @@ def build_context(
         eval_state=eval_state,
         test_state=test_state,
         binding=binding,
-        work_item_id=work_item_id,
-        landing_grant=landing_grant,
+        landing_readiness=landing_readiness,
         dispatch_phase=dispatch_phase,
         enforcement_config=enforcement_config,
-        enforcement_gaps=enforcement_gaps,
-        policy_strikes=policy_strikes,
-        capabilities=_capabilities_for(canonical_role),
-        worktree_lease_suppressed_roles=suppressed_roles,
-        scratchlane_roots=scratchlane_roots,
-        session_id=session_id,
     )
 
 

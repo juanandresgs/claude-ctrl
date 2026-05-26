@@ -9,9 +9,8 @@
 # @decision DEC-DISPATCH-001
 # @title Dispatch queue emission on agent stop
 # @status accepted
-# @rationale The canonical flow (planner→guardian(provision)→implementer→
-#   reviewer→guardian(land)) was previously prompt-driven with no persistent
-#   queue. This hook records
+# @rationale The canonical flow (planner→implementer→tester→guardian) was
+#   previously prompt-driven with no persistent queue. This hook records
 #   completions in SQLite via cc-policy and suggests next steps, making
 #   the flow visible and auditable without forcing automatic dispatch.
 #   The guardian case produces no suggestion because the cycle is complete.
@@ -71,13 +70,13 @@ source "$(dirname "$0")/context-lib.sh"
 # ---------------------------------------------------------------------------
 
 _HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
-_LOCAL_RUNTIME_ROOT="$_HOOK_DIR/../runtime"
+_LOCAL_RUNTIME_CLI="$_HOOK_DIR/../runtime/cli.py"
 
 _local_cc_policy() {
-    if [[ -z "${CLAUDE_POLICY_DB:-}" ]]; then
-        _resolve_policy_db >/dev/null
+    if [[ -n "${CLAUDE_PROJECT_DIR:-}" && -z "${CLAUDE_POLICY_DB:-}" ]]; then
+        export CLAUDE_POLICY_DB="$CLAUDE_PROJECT_DIR/.claude/state.db"
     fi
-    cc_policy_local_runtime "$_LOCAL_RUNTIME_ROOT" "$@"
+    python3 "$_LOCAL_RUNTIME_CLI" "$@"
 }
 
 # ---------------------------------------------------------------------------
@@ -85,7 +84,6 @@ _local_cc_policy() {
 # ---------------------------------------------------------------------------
 
 HOOK_INPUT=$(read_input)
-seed_project_dir_from_hook_payload_cwd "$HOOK_INPUT"
 
 # Tolerate both snake_case and camelCase field names for agent type
 AGENT_TYPE=$(echo "$HOOK_INPUT" | jq -r '
@@ -98,11 +96,11 @@ AGENT_TYPE=$(echo "$HOOK_INPUT" | jq -r '
 # named agent completions in the canonical flow.
 [[ -z "$AGENT_TYPE" ]] && exit 0
 
-# Guardian admission is a non-canonical Guardian mode. check-guardian.sh parses
-# its ADMISSION_* trailers and emits audit context; post-task must not route it
-# through the canonical completion state machine.
+# v6 result contracts are submitted by v6-result-submit.sh. Do not also run
+# the legacy role/path dispatch engine; that would create a second routing
+# authority and may emit stale PROCESS ERROR text after a valid v6 transition.
 RESPONSE_TEXT=$(agent_response_text "$HOOK_INPUT")
-if [[ "$AGENT_TYPE" == "guardian" ]] && printf '%s' "$RESPONSE_TEXT" | grep -qE '^ADMISSION_VERDICT:[[:space:]]*'; then
+if [[ "$RESPONSE_TEXT" == *'```claude_ctrl_result'* ]]; then
     exit 0
 fi
 
@@ -111,6 +109,12 @@ fi
 # ---------------------------------------------------------------------------
 
 PROJECT_ROOT=$(detect_project_root 2>/dev/null || echo "")
+
+case "${AGENT_TYPE:-}" in
+    planner|implementer|critic|reviewer|guardian|tester)
+        _local_cc_policy lifecycle on-stop "$AGENT_TYPE" --project-root "$PROJECT_ROOT" >/dev/null 2>&1 || true
+        ;;
+esac
 
 # ---------------------------------------------------------------------------
 # Delegate to Python runtime via dispatch process-stop (local CLI resolution)
@@ -139,5 +143,38 @@ fi
 
 # Echo the hookSpecificOutput wrapper produced by the runtime.
 printf '%s' "$RESULT" | jq '{hookSpecificOutput: .hookSpecificOutput}'
+
+# Observatory: emit review_verdict metric from the most recent codex_stop_review event (W-OBS-2).
+# Queries the event store for the latest codex_stop_review event and parses VERDICT from its
+# detail string (format: "VERDICT: ALLOW — ..." or "VERDICT: BLOCK — ...").
+# Non-fatal: || true ensures metric emission never prevents the hook from exiting cleanly.
+_review_raw=$(_local_cc_policy event query --type codex_stop_review --limit 1 2>/dev/null || echo "")
+_review_event=$(printf '%s' "$_review_raw" \
+    | jq -r '.items[0].detail // "" ' 2>/dev/null || echo "")
+_review_created=$(printf '%s' "$_review_raw" \
+    | jq -r '.items[0].created_at // "" ' 2>/dev/null || echo "")
+if [[ -n "$_review_event" ]]; then
+    _review_verdict=$(printf '%s' "$_review_event" \
+        | grep -oE 'VERDICT: (ALLOW|BLOCK)' | head -1 | awk '{print $2}' || echo "")
+    if [[ -n "$_review_verdict" ]]; then
+        _review_value=0
+        [[ "$_review_verdict" == "ALLOW" ]] && _review_value=1
+        rt_obs_metric review_verdict "$_review_value" \
+            "{\"provider\":\"codex\",\"verdict\":\"${_review_verdict}\"}" \
+            "" "${AGENT_TYPE:-}" || true
+        # EC-11: emit review_duration_s from event created_at to now
+        if [[ -n "$_review_created" && "$_review_created" =~ ^[0-9]+$ ]]; then
+            _review_duration=$(( $(date +%s) - _review_created ))
+            rt_obs_metric review_duration_s "$_review_duration" \
+                "{\"provider\":\"codex\"}" "" "${AGENT_TYPE:-}" || true
+        fi
+    fi
+    # EC-12: emit review_infra_failure when event detail contains "infra failure"
+    if printf '%s' "$_review_event" | grep -qi "infra.failure\|infra_failure\|INFRA_FAILURE"; then
+        rt_obs_metric review_infra_failure 1 \
+            "{\"provider\":\"codex\",\"error_type\":\"infra_failure\"}" \
+            "" "${AGENT_TYPE:-}" || true
+    fi
+fi
 
 exit 0

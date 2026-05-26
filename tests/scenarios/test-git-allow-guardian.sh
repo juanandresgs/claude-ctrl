@@ -36,35 +36,43 @@ git -C "$TMP_DIR" commit --allow-empty -m "init" -q
 # Use a feature branch so Check 4 (no commit on main) doesn't fire
 git -C "$TMP_DIR" checkout -b feature/ready-to-merge -q
 
-# Gate 1: guardian:land role active via cc-policy (TKT-018: .subagent-tracker removed)
+# Gate 1: Guardian role active via cc-policy (TKT-018: .subagent-tracker removed)
 CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" schema ensure >/dev/null 2>&1
 CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" \
-    marker set "agent-test" "guardian:land" --project-root "$TMP_DIR" >/dev/null 2>&1
+    marker set "agent-test" "guardian" --project-root "$TMP_DIR" >/dev/null 2>&1
 
 # Gate 2: test status = pass via runtime (policy engine reads SQLite, not flat file)
 CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" \
     test-state set pass --project-root "$TMP_DIR" --passed 1 --total 1 >/dev/null 2>&1
 
-# Gate 3: evaluation_state = ready_for_guardian (TKT-024: replaces proof_state)
-# current_workflow_id uses sanitize_token on the branch name
-# branch "feature/ready-to-merge" -> sanitize: "feature-ready-to-merge"
+# Gate 3/4/5: v6 landing readiness aggregate.
+# current_workflow_id uses sanitize_token on the branch name:
+# branch "feature/ready-to-merge" -> sanitize: "feature-ready-to-merge".
 WORKFLOW_ID="feature-ready-to-merge"
 HEAD_SHA=$(git -C "$TMP_DIR" rev-parse HEAD)
-CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" evaluation set "$WORKFLOW_ID" "ready_for_guardian" --head-sha "$HEAD_SHA" >/dev/null 2>&1
-
-# Gate 4: workflow binding + scope (Check 12)
 CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" \
     workflow bind "$WORKFLOW_ID" "$TMP_DIR" "feature/ready-to-merge" >/dev/null 2>&1
 CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" \
-    workflow scope-set "$WORKFLOW_ID" \
-    --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1
-
-# Gate 5: dispatch lease (policy engine requires active lease for all git ops)
+    workflow scope-set "$WORKFLOW_ID" --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1
+CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" \
+    test-state set pass --project-root "$TMP_DIR" --head-sha "$HEAD_SHA" --passed 1 --total 1 >/dev/null 2>&1
+REVIEWER_JSON=$(CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" \
+    stage run-create --workflow-id "$WORKFLOW_ID" --stage-id reviewer --worktree-path "$TMP_DIR")
+REVIEWER_RUN=$(printf '%s' "$REVIEWER_JSON" | jq -r '.stage_run.id')
+REVIEW_PAYLOAD=$(jq -nc --arg run "$REVIEWER_RUN" --arg sha "$HEAD_SHA" \
+    '{stage_run_id:$run,stage_id:"reviewer",verdict:"ready_for_guardian",summary:"reviewed",head_sha:$sha,findings:[]}')
+REVIEW_RESULT=$(CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" \
+    stage result-submit "$REVIEWER_RUN" --payload "$REVIEW_PAYLOAD")
+GUARDIAN_RUN=$(printf '%s' "$REVIEW_RESULT" | jq -r '.next_stage_run.id')
+LEASE_META=$(jq -nc --arg run "$GUARDIAN_RUN" '{stage_run_id:$run}')
 CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" \
     lease issue-for-dispatch "guardian" \
     --worktree-path "$TMP_DIR" \
     --workflow-id "$WORKFLOW_ID" \
-    --allowed-ops '["routine_local","high_risk"]' >/dev/null 2>&1
+    --allowed-ops '["routine_local","high_risk"]' \
+    --metadata "$LEASE_META" >/dev/null 2>&1
+CLAUDE_POLICY_DB="$TMP_DIR/.claude/state.db" python3 "$REPO_ROOT/runtime/cli.py" \
+    stage landing-ready "$GUARDIAN_RUN" >/dev/null 2>&1
 
 PAYLOAD=$(jq -n \
     --arg tool_name "Bash" \

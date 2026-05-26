@@ -43,21 +43,6 @@ Rationale: build_context() is the primary defense against role-blind lease
   This prevents a scenario where build_context incorrectly hands a guardian
   lease to an orchestrator — the secondary check catches it even if the primary
   filter has a bug. Defense in depth: two independent checks, either sufficient.
-
-@decision DEC-PE-GIT-WHO-LEASE-DENY-DIAG-001
-Title: bash_git_who distinguishes "no lease" from "lease exists but not attachable"
-Status: accepted
-Rationale: Before this change, both scenarios surfaced identical deny text:
-  "No active dispatch lease for this worktree" — even when an active lease
-  actually existed and the real problem was that the caller's actor_role did
-  not match the lease holder's role. Operators chased "re-issue the lease"
-  remediations that did nothing. bash_git_who now reads the diagnostic field
-  ``context.worktree_lease_suppressed_roles`` (populated by build_context,
-  DEC-PE-LEASE-DENY-DIAG-001) and emits a distinct message naming the real
-  cause: actor-role unresolved (orchestrator) vs. actor-role mismatch
-  (non-owner). Enforcement is IDENTICAL in all three branches — every path
-  still denies. Only the reason text and classification change, so operators
-  can route remediations correctly. No relaxation of lease WHO.
 """
 
 from __future__ import annotations
@@ -66,26 +51,8 @@ import json
 import time
 from typing import Optional
 
-from runtime.core.authority_registry import (
-    CAN_LAND_GIT,
-    READ_ONLY_REVIEW,
-    actor_matches_lease_role,
-)
-from runtime.core.landing_authority import is_branch_checkpoint_commit
-from runtime.core.leases import op_class_label
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
-
-# @decision DEC-WHO-LANDING-001
-# Landing subcommands (commit, merge, push) require CAN_LAND_GIT capability.
-# Only guardian:land carries this capability. This gate fires AFTER the
-# lease-expired check but BEFORE allowed_ops, so actors with valid leases
-# but without landing authority are denied before op-class checks.
-# admin_recovery ops (e.g. merge --abort) are exempt — they undo state,
-# not land code.
-_LANDING_SUBCOMMANDS = frozenset({"commit", "merge", "push"})
-_PLUMBING_SUBCOMMANDS = frozenset(
-    {"commit-tree", "update-ref", "symbolic-ref", "filter-branch", "filter-repo"}
-)
+from runtime.core.policies.fast_path import guarded_non_source_commit
 
 def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     """Deny git operations requiring a Guardian lease when no valid active lease covers the op.
@@ -93,7 +60,6 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     Logic:
       1. Skip if meta-repo.
       2. Classify the command; skip if it is not a real git op.
-      2b. If READ_ONLY_REVIEW in capabilities: deny unconditionally (Phase 3).
       3. If no lease in context: deny with guidance to issue a lease.
       4. Belt-and-suspenders role check: if lease.role doesn't match actor_role, deny.
       5. If lease expired: deny with effects to expire stale leases.
@@ -106,87 +72,21 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     if intent is None:
         return None
 
-    git_operations = tuple(
-        op for op in intent.git_operations if op.op_class != "unclassified"
-    )
-    if not git_operations:
+    op_class = intent.git_op_class
+    if op_class == "unclassified":
         return None
 
     # Meta-repo bypass.
     if request.context.is_meta_repo:
         return None
 
-    # Phase 3 capability gate: read-only stages (reviewer) must not run git
-    # operations regardless of lease contents. Changes and landing must route
-    # through implementer and guardian respectively.
-    if READ_ONLY_REVIEW in request.context.capabilities:
-        return PolicyDecision(
-            action="deny",
-            reason=(
-                "Read-only stage cannot run git operations. "
-                "Source changes must route through an implementer; "
-                "git landing must route through a guardian."
-            ),
-            policy_name="bash_git_who",
-        )
+    fast_path = guarded_non_source_commit(request)
+    if fast_path.eligible:
+        return None
 
     lease = request.context.lease
 
     if lease is None:
-        # Distinguish "no lease exists at all" (operator must issue one) from
-        # "lease exists on this worktree but the caller cannot attach it
-        # because actor_role is unresolved or mismatched" (operator does not
-        # need to re-issue — they need an actor-role context matching the
-        # existing lease). See DEC-PE-LEASE-DENY-DIAG-001. Enforcement is
-        # identical in both branches — this is diagnostic-only classification
-        # so operators do not waste time on the wrong remediation.
-        suppressed = request.context.worktree_lease_suppressed_roles
-        actor = (request.context.actor_role or "").strip()
-        if suppressed:
-            roles_text = ", ".join(sorted(suppressed))
-            if not actor:
-                # Orchestrator path — DEC-PE-EGAP-BUILD-CTX-001 suppresses
-                # worktree-path lease inheritance when actor_role is empty.
-                reason = (
-                    f"Active lease(s) for role(s) [{roles_text}] exist on "
-                    f"this worktree, but the caller has no resolved actor "
-                    f"role and cannot attach a role-specific lease "
-                    f"(DEC-PE-EGAP-BUILD-CTX-001). Git operations from the "
-                    f"orchestrator are not authorised — dispatch the matching "
-                    f"role via the canonical chain so the lease is consumed "
-                    f"under the correct actor. Do NOT re-issue the lease; "
-                    f"the lease is fine, the caller is not."
-                )
-            else:
-                # Actor role is set but does not match any active lease role
-                # on this worktree.
-                reason = (
-                    f"Active lease(s) for role(s) [{roles_text}] exist on "
-                    f"this worktree, but the caller's actor role "
-                    f"{actor!r} does not match any of them. Only the "
-                    f"lease-holder role may use a role-specific lease "
-                    f"(DEC-PE-EGAP-BUILD-CTX-001). Re-dispatch under the "
-                    f"matching role, or issue a new lease for "
-                    f"{actor!r} if that role is the intended operator."
-                )
-            return PolicyDecision(
-                action="deny",
-                reason=reason,
-                policy_name="bash_git_who",
-                effects={"expire_stale_leases": True},
-                metadata={
-                    "reason_code": "lease_not_attachable",
-                    "observed": {
-                        "actor_role": actor,
-                        "target_worktree": request.context.project_root or request.cwd,
-                        "active_lease_roles": sorted(suppressed),
-                    },
-                    "repair": (
-                        "dispatch the matching canonical stage so the existing "
-                        "lease is consumed by the lease-holder actor"
-                    ),
-                },
-            )
         return PolicyDecision(
             action="deny",
             reason=(
@@ -197,47 +97,23 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
             ),
             policy_name="bash_git_who",
             effects={"expire_stale_leases": True},
-            metadata={
-                "reason_code": "missing_dispatch_lease",
-                "observed": {
-                    "target_worktree": request.context.project_root or request.cwd,
-                    "actor_role": request.context.actor_role,
-                    "workflow_id": request.context.workflow_id,
-                },
-                "repair": (
-                    "issue or dispatch a lease for the command target worktree "
-                    "before running mutating git operations"
-                ),
-            },
         )
 
     # Belt-and-suspenders role check (DEC-PE-EGAP-GIT-WHO-002):
-    # If the lease carries a role, the actor must match it. Uses
-    # actor_matches_lease_role (DEC-WHO-STAGE-LEASE-MATCH-001) to bridge
-    # compound stage IDs to lease-level roles.
-    lease_role_str = (lease.get("role") or "").strip()
-    if lease_role_str and not actor_matches_lease_role(
-        request.context.actor_role or "", lease_role_str
-    ):
-        actor_display = (request.context.actor_role or "").lower().strip()
+    # If the lease carries a role, the actor must match it. This is a secondary
+    # defense against build_context handing the wrong actor a role-specific lease.
+    actor = (request.context.actor_role or "").lower().strip()
+    lease_role = (lease.get("role") or "").lower().strip()
+    if lease_role and actor != lease_role:
         return PolicyDecision(
             action="deny",
             reason=(
-                f"Lease role '{lease_role_str.lower()}' does not match actor role '{actor_display}'. "
+                f"Lease role '{lease_role}' does not match actor role '{actor}'. "
                 "Only the lease holder may use this lease for git operations. "
                 "Dispatch via: cc-policy lease issue-for-dispatch "
                 "--role <role> --worktree-path <path>"
             ),
             policy_name="bash_git_who",
-            metadata={
-                "reason_code": "lease_role_mismatch",
-                "observed": {
-                    "lease_role": lease_role_str,
-                    "actor_role": request.context.actor_role,
-                    "workflow_id": request.context.workflow_id,
-                },
-                "repair": "run the command from the actor that claimed the lease",
-            },
         )
 
     # Check lease is not expired (defensive — build_context only loads active
@@ -251,6 +127,34 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
             effects={"expire_stale_leases": True},
         )
 
+    invocation = intent.git_invocation
+    subcommand = invocation.subcommand if invocation is not None else ""
+
+    # v6 default: implementers write files and run tests; Guardian owns git
+    # mutation. Read-only git commands are unclassified and skip this policy.
+    # Any classified mutation by an implementer requires an explicit v6 metadata
+    # grant (`can_commit_branch=true`) and is otherwise denied, including
+    # routine_local commits that v4/v5 leases historically allowed.
+    if lease_role == "implementer":
+        metadata = {}
+        try:
+            metadata = json.loads(lease.get("metadata_json") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            metadata = {}
+        grant = metadata.get("work_item_grant") if isinstance(metadata, dict) else {}
+        can_commit = isinstance(grant, dict) and grant.get("can_commit_branch") is True
+        if not (subcommand == "commit" and can_commit):
+            return PolicyDecision(
+                action="deny",
+                reason=(
+                    "v6 git custody: implementers may not mutate git by default. "
+                    "Guardian owns commits, merges, pushes, worktree lifecycle, stash, "
+                    "branch/ref changes, and landing. Re-dispatch Guardian or attach an "
+                    "explicit work_item_grant.can_commit_branch=true for scoped checkpoint commits."
+                ),
+                policy_name="bash_git_who",
+            )
+
     try:
         allowed_ops = json.loads(lease.get("allowed_ops_json") or "[]")
         blocked_ops = json.loads(lease.get("blocked_ops_json") or "[]")
@@ -258,79 +162,26 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
         allowed_ops = ["routine_local"]
         blocked_ops = []
 
-    # CAN_LAND_GIT capability gate (DEC-WHO-LANDING-001): landing subcommands
-    # require CAN_LAND_GIT. admin_recovery ops (merge --abort) are exempt.
-    for operation in git_operations:
-        invocation = operation.invocation
-        op_class = operation.op_class
-        target_dir = request.context.project_root or request.cwd or ""
-        is_branch_commit = (
-            invocation.subcommand == "commit"
-            and is_branch_checkpoint_commit(request.context, target_dir)
+    if op_class in blocked_ops:
+        return PolicyDecision(
+            action="deny",
+            reason=(
+                f"Execution contract denied: op_class '{op_class}' is in blocked_ops. "
+                "Check lease allowed_ops or evaluation_state."
+            ),
+            policy_name="bash_git_who",
         )
-        if (
-            invocation.subcommand in _LANDING_SUBCOMMANDS
-            and op_class != "admin_recovery"
-            and not is_branch_commit
-        ):
-            if CAN_LAND_GIT not in request.context.capabilities:
-                return PolicyDecision(
-                    action="deny",
-                    reason=(
-                        f"Landing authority required: git {invocation.subcommand} "
-                        f"requires the {CAN_LAND_GIT} capability. Only guardian:land "
-                        f"carries this capability. Current actor "
-                        f"'{request.context.actor_role}' does not have it."
-                    ),
-                    policy_name="bash_git_who",
-                    metadata={
-                        "reason_code": "missing_landing_capability",
-                        "observed": {
-                            "subcommand": invocation.subcommand,
-                            "actor_role": request.context.actor_role,
-                            "capabilities": sorted(request.context.capabilities),
-                            "workflow_id": request.context.workflow_id,
-                        },
-                        "repair": "dispatch guardian:land after reviewer readiness",
-                    },
-                )
-        if invocation.subcommand in _PLUMBING_SUBCOMMANDS:
-            if CAN_LAND_GIT not in request.context.capabilities:
-                return PolicyDecision(
-                    action="deny",
-                    reason=(
-                        f"Direct git plumbing (`git {invocation.subcommand}`) requires "
-                        f"the {CAN_LAND_GIT} capability. Use the canonical Guardian "
-                        "landing path (`git commit`, plain `git merge`, or straightforward "
-                        "`git push`) under guardian:land instead."
-                    ),
-                    policy_name="bash_git_who",
-                )
 
-    for operation in git_operations:
-        op_class = operation.op_class
-        if op_class in blocked_ops:
-            return PolicyDecision(
-                action="deny",
-                reason=(
-                    f"Execution contract denied: {op_class_label(op_class)} operation "
-                    f"is blocked by this lease: in blocked_ops "
-                    f"(internal op_class '{op_class}'). "
-                    "Check lease allowed_ops or evaluation_state."
-                ),
-                policy_name="bash_git_who",
-            )
-        if op_class not in allowed_ops:
-            return PolicyDecision(
-                action="deny",
-                reason=(
-                    f"Execution contract denied: {op_class_label(op_class)} operation "
-                    f"is not in allowed_ops {allowed_ops} "
-                    f"(internal op_class '{op_class}'). "
-                    "Check lease allowed_ops or evaluation_state."
-                ),
-                policy_name="bash_git_who",
-            )
+    if op_class not in allowed_ops:
+        return PolicyDecision(
+            action="deny",
+            reason=(
+                f"Execution contract denied: op_class '{op_class}' not in "
+                f"allowed_ops {allowed_ops}. "
+                "Check lease allowed_ops or evaluation_state."
+            ),
+            policy_name="bash_git_who",
+        )
 
     return None
 

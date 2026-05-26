@@ -19,7 +19,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
+import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Sequence
 
@@ -32,42 +35,40 @@ if str(_PROJECT_ROOT) not in sys.path:
 import runtime.core.approvals as approvals_mod
 import runtime.core.bugs as bugs_mod
 import runtime.core.completions as completions_mod
-import runtime.core.critic_reviews as critic_reviews_mod
+import runtime.core.critic_runner as critic_runner_mod
+import runtime.core.dispatch as dispatch_mod
 import runtime.core.dispatch_engine as dispatch_engine_mod
+import runtime.core.dispatch_pump as dispatch_pump_mod
 import runtime.core.enforcement_config as enforcement_config_mod
-import runtime.core.enforcement_gaps as enforcement_gaps_mod
 import runtime.core.eval_metrics as eval_metrics_mod
 import runtime.core.eval_report as eval_report_mod
+import runtime.core.eval_runner as eval_runner_mod
 import runtime.core.eval_scorer as eval_scorer_mod
 import runtime.core.evaluation as evaluation_mod
 import runtime.core.events as events_mod
-import runtime.core.hook_doc_validation as hook_doc_validation_mod
-import runtime.core.hook_manifest as hook_manifest_mod
+import runtime.core.landing_readiness as landing_readiness_mod
 import runtime.core.leases as leases_mod
 import runtime.core.lifecycle as lifecycle_mod
-import runtime.core.lint_state as lint_state_mod
 import runtime.core.markers as markers_mod
 import runtime.core.observatory as observatory_mod
 import runtime.core.policy_engine as policy_engine_mod
-import runtime.core.policy_strikes as policy_strikes_mod
-import runtime.core.preserved_context as preserved_context_mod
-import runtime.core.prompt_pack_validation as prompt_pack_validation_mod
+import runtime.core.proof as proof_mod
+import runtime.core.prompt_router as prompt_router_mod
 import runtime.core.quick_eval as quick_eval_mod
-import runtime.core.scratchlanes as scratchlanes_mod
-import runtime.core.session_activity as session_activity_mod
-import runtime.core.shadow_parity as shadow_parity_mod
+import runtime.core.stage_machine as stage_machine_mod
+import runtime.core.stage_runs as stage_runs_mod
+import runtime.core.settings_renderer as settings_renderer_mod
+import runtime.core.critic_worker as critic_worker_mod
 import runtime.core.statusline as statusline_mod
 import runtime.core.todos as todos_mod
 import runtime.core.tokens as tokens_mod
 import runtime.core.traces as traces_mod
-import runtime.core.work_admission as work_admission_mod
-import runtime.core.workflow_bootstrap as workflow_bootstrap_mod
 import runtime.core.workflows as workflows_mod
 import runtime.core.worktrees as worktrees_mod
-from runtime.core.config import default_db_path, resolve_db_path
+from runtime.core.config import default_db_path
 from runtime.core.db import connect
 from runtime.eval_schemas import ensure_eval_schema  # noqa: F401 — imported for eval_metrics
-from runtime.schemas import ensure_schema
+from runtime.schemas import ensure_schema, exercise_schema_upgrade, schema_status
 from sidecars.observatory.observe import Observatory
 from sidecars.search.search import SearchIndex
 
@@ -87,228 +88,11 @@ def _err(message: str, code: int = 1) -> int:
     return code
 
 
-def _get_conn(project_root: str | None = None):
-    db_path = resolve_db_path(project_root=project_root)
+def _get_conn():
+    db_path = default_db_path()
     conn = connect(db_path)
     ensure_schema(conn)
     return conn
-
-
-def _agent_contract_carrier_effect(conn, payload: dict, decision):
-    """Write the Agent contract carrier after policy allow.
-
-    ``agent_contract_required`` owns launch validation. This helper runs only
-    after that policy gate has allowed the Agent/Task invocation, then performs
-    the stateful carrier write that lets ``SubagentStart`` receive the same
-    six-field contract. Shell hooks must not duplicate contract shape, stage, or
-    subagent validation.
-    """
-    import os as _os
-    import time as _time
-
-    from runtime.core.agent_contract_codec import (
-        CONTRACT_BLOCK_PREFIX as _CONTRACT_BLOCK_PREFIX,
-    )
-    from runtime.core.agent_contract_codec import (
-        first_line_contract_json as _first_line_contract_json,
-    )
-    from runtime.core.dispatch_contract import (
-        dispatch_subagent_type_for_stage as _dispatch_subagent_type_for_stage,
-    )
-    from runtime.core.dispatch_hook import record_agent_dispatch as _record_agent_dispatch
-    from runtime.core.dispatch_preflight import (
-        validate_prompt_pack_preflight as _validate_prompt_pack_preflight,
-    )
-    from runtime.core.pending_agent_requests import write_pending_request as _write_pending_request
-
-    if decision.action != "allow":
-        return None
-    if payload.get("event_type") != "PreToolUse":
-        return None
-    if payload.get("tool_name") not in ("Agent", "Task"):
-        return None
-
-    tool_input = payload.get("tool_input", {})
-    if not isinstance(tool_input, dict):
-        return None
-    prompt = tool_input.get("prompt", "") or ""
-    contract_raw = _first_line_contract_json(prompt)
-    if contract_raw is None:
-        return None
-
-    session_id = str(payload.get("session_id") or "")
-    if not session_id:
-        # Preserve the historical hook behavior: a malformed/missing session id
-        # means there is no transport correlation key, so no carrier row is
-        # written. Real Claude Code PreToolUse payloads include session_id.
-        return None
-
-    if payload.get("carrier_db_resolved") is False:
-        return policy_engine_mod.PolicyDecision(
-            action="deny",
-            reason=(
-                "carrier_write_failed: no project policy DB path could be resolved "
-                "for canonical Agent dispatch. Set CLAUDE_POLICY_DB or run from "
-                "inside a git repo with .claude/state.db."
-            ),
-            policy_name="agent_contract_carrier",
-        )
-
-    try:
-        contract = json.loads(contract_raw)
-        stage_id = str(contract.get("stage_id") or "")
-        expected_subagent_type = _dispatch_subagent_type_for_stage(stage_id)
-        if not expected_subagent_type:
-            raise ValueError(f"unknown active stage: {stage_id!r}")
-        _validate_prompt_pack_preflight(
-            conn,
-            contract,
-            label="PreToolUse:Agent",
-        )
-
-        timeout_at = None
-        timeout_seconds = _os.environ.get("CLAUDEX_DISPATCH_ATTEMPT_TIMEOUT_SECONDS", "2700")
-        if timeout_seconds.isdigit() and int(timeout_seconds) > 0:
-            timeout_at = int(_time.time()) + int(timeout_seconds)
-
-        workflow_id = str(contract.get("workflow_id") or "")
-        instruction = prompt.split("\n", 1)[0]
-        if not instruction.startswith(_CONTRACT_BLOCK_PREFIX):
-            instruction = f"{_CONTRACT_BLOCK_PREFIX}{contract_raw}"
-        attempt = _record_agent_dispatch(
-            conn,
-            session_id,
-            expected_subagent_type,
-            instruction,
-            workflow_id=workflow_id or None,
-            work_item_id=str(contract["work_item_id"]),
-            goal_id=str(contract["goal_id"]),
-            stage_id=stage_id,
-            decision_scope=str(contract["decision_scope"]),
-            parent_agent_id=str(payload.get("actor_id") or ""),
-            tool_use_id=str(payload.get("tool_use_id") or ""),
-            target_project_root=str(payload.get("project_root") or payload.get("cwd") or ""),
-            contract=contract,
-            timeout_at=timeout_at,
-        )
-        _write_pending_request(
-            conn,
-            attempt_id=str(attempt["attempt_id"]),
-            session_id=session_id,
-            agent_type=expected_subagent_type,
-            workflow_id=workflow_id,
-            stage_id=stage_id,
-            goal_id=str(contract["goal_id"]),
-            work_item_id=str(contract["work_item_id"]),
-            decision_scope=str(contract["decision_scope"]),
-            generated_at=int(contract["generated_at"]),
-            parent_agent_id=str(payload.get("actor_id") or ""),
-            tool_use_id=str(payload.get("tool_use_id") or ""),
-            target_project_root=str(payload.get("project_root") or payload.get("cwd") or ""),
-            worktree_path=str(attempt.get("worktree_path") or ""),
-            contract_json=contract,
-        )
-    except Exception as exc:
-        return policy_engine_mod.PolicyDecision(
-            action="deny",
-            reason=(
-                "carrier_write_failed: canonical Agent dispatch failed prompt-pack "
-                "preflight or could not atomically write its dispatch attempt and "
-                "pending carrier. "
-                f"Detail: {exc}"
-            ),
-            policy_name="agent_contract_carrier",
-        )
-
-    return None
-
-
-def _guardian_admission_carrier_effect(conn, payload: dict, decision):
-    """Write the narrow carrier that marks a Guardian launch as admission mode."""
-    import time as _time
-    import uuid as _uuid
-
-    from runtime.core import authority_registry as _authority_registry
-    from runtime.core.pending_agent_requests import write_pending_request as _write_pending_request
-    from runtime.core.policies.agent_contract_required import (
-        is_guardian_admission_prompt as _is_guardian_admission_prompt,
-    )
-
-    if decision.action != "allow":
-        return None
-    if payload.get("event_type") != "PreToolUse":
-        return None
-    if payload.get("tool_name") not in ("Agent", "Task"):
-        return None
-
-    tool_input = payload.get("tool_input", {})
-    if not isinstance(tool_input, dict):
-        return None
-
-    subagent_type = str(tool_input.get("subagent_type") or "").strip()
-    canonical = _authority_registry.canonical_dispatch_subagent_type(subagent_type)
-    prompt = str(tool_input.get("prompt") or "")
-    if canonical != "guardian" or not _is_guardian_admission_prompt(prompt):
-        return None
-
-    session_id = str(payload.get("session_id") or "")
-    if not session_id:
-        return policy_engine_mod.PolicyDecision(
-            action="deny",
-            reason=(
-                "guardian_admission_carrier_failed: Guardian admission mode "
-                "requires a session_id so SubagentStart can receive the "
-                "non-canonical mode carrier."
-            ),
-            policy_name="guardian_admission_carrier",
-        )
-
-    if payload.get("carrier_db_resolved") is False:
-        return policy_engine_mod.PolicyDecision(
-            action="deny",
-            reason=(
-                "guardian_admission_carrier_failed: no project policy DB path "
-                "could be resolved for Guardian admission mode."
-            ),
-            policy_name="guardian_admission_carrier",
-        )
-
-    now = int(_time.time())
-    target_root = str(payload.get("project_root") or payload.get("cwd") or "")
-    try:
-        _write_pending_request(
-            conn,
-            attempt_id=f"guardian-admission-{_uuid.uuid4().hex}",
-            session_id=session_id,
-            agent_type="guardian",
-            workflow_id=str(payload.get("workflow_id") or "guardian-admission"),
-            stage_id="guardian:admission",
-            goal_id="guardian-admission",
-            work_item_id="guardian-admission",
-            decision_scope="pre-workflow custody admission",
-            generated_at=now,
-            parent_agent_id=str(payload.get("actor_id") or ""),
-            tool_use_id=str(payload.get("tool_use_id") or ""),
-            target_project_root=target_root,
-            worktree_path=target_root,
-            contract_json={
-                "guardian_mode": "admission",
-                "canonical_stage": False,
-                "authority": "runtime.core.work_admission",
-                "generated_at": now,
-            },
-        )
-    except Exception as exc:
-        return policy_engine_mod.PolicyDecision(
-            action="deny",
-            reason=(
-                "guardian_admission_carrier_failed: pending carrier row could "
-                f"not be written. Detail: {exc}"
-            ),
-            policy_name="guardian_admission_carrier",
-        )
-
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -317,9 +101,25 @@ def _guardian_admission_carrier_effect(conn, payload: dict, decision):
 
 
 def _handle_schema(args) -> int:
-    conn = _get_conn()
-    conn.close()
-    return _ok({"message": "schema ensured"})
+    if args.action == "ensure":
+        conn = _get_conn()
+        status = schema_status(conn)
+        conn.close()
+        return _ok({"message": "schema ensured", **status})
+
+    if args.action == "exercise-upgrade":
+        try:
+            result = exercise_schema_upgrade(
+                args.source_db,
+                work_dir=getattr(args, "work_dir", "") or "",
+                keep_copy=bool(getattr(args, "keep_copy", False)),
+                require_reset=bool(getattr(args, "require_reset", False)),
+            )
+            return _ok({"message": "schema upgrade exercise complete", **result})
+        except Exception as exc:
+            return _err(f"schema exercise-upgrade failed: {exc}")
+
+    return _err(f"unknown schema action: {args.action}")
 
 
 def _handle_config(args) -> int:
@@ -375,6 +175,31 @@ def _handle_config(args) -> int:
     finally:
         conn.close()
     return _err(f"unknown config action: {args.action}")
+
+
+def _handle_proof(args) -> int:
+    conn = _get_conn()
+    try:
+        if args.action == "get":
+            result = proof_mod.get(conn, args.workflow_id)
+            if result is None:
+                return _ok({"workflow_id": args.workflow_id, "status": "idle", "found": False})
+            result["found"] = True
+            return _ok(result)
+
+        elif args.action == "set":
+            proof_mod.set_status(conn, args.workflow_id, args.status)
+            return _ok({"workflow_id": args.workflow_id, "status": args.status})
+
+        elif args.action == "list":
+            rows = proof_mod.list_all(conn)
+            return _ok({"items": rows, "count": len(rows)})
+
+    except ValueError as e:
+        return _err(str(e))
+    finally:
+        conn.close()
+    return _err(f"unknown proof action: {args.action}")
 
 
 def _handle_evaluation(args) -> int:
@@ -435,20 +260,7 @@ def _handle_marker(args) -> int:
             # W-CONV-2: accept optional --project-root and --workflow-id so the
             # test-marker-lifecycle.sh helper and production callers can write
             # scoped markers via `cc-policy marker set`.
-            #
-            # A21 hardening: when --project-root is omitted, resolve through the
-            # canonical CLI resolver (_resolve_project_root: args → env
-            # CLAUDE_PROJECT_DIR → git toplevel → normalize_path) so normal repo
-            # sessions no longer persist agent_markers.project_root = NULL.
-            # This closes the A19R secondary defect where scoped
-            # `marker get-active --project-root <root>` could not find a marker
-            # written by `marker set` without the flag. If resolution still
-            # returns empty (no args, no env, cwd outside a git repo), fall back
-            # to the legacy unscoped write (project_root=None) rather than
-            # crashing — preserving backward compat for context-less callers.
             _pr = getattr(args, "project_root", None) or ""
-            if not _pr:
-                _pr = _resolve_project_root(args)
             _wf = getattr(args, "workflow_id", None) or ""
             markers_mod.set_active(
                 conn,
@@ -519,1271 +331,6 @@ def _handle_event(args) -> int:
     return _err(f"unknown event action: {args.action}")
 
 
-def _handle_doc(args) -> int:
-    """Thin CLI adapter over runtime.core.doc_reference_validation.
-
-    ``cc-policy doc ref-check <path>``:
-        Scan the markdown at ``<path>`` for hook-surface references and
-        diff them against HOOK_MANIFEST. Prints the structured report as
-        JSON. Exits non-zero when drift is detected (unknown adapter
-        paths, unknown events, or unknown event-matcher pairs).
-    """
-    from runtime.core.doc_reference_validation import validate_doc_references_file
-
-    if args.action == "ref-check":
-        path = args.path
-        if not Path(path).is_file():
-            return _err(f"doc ref-check: path not found or not a file: {path}")
-        report = validate_doc_references_file(path)
-        body = report.as_dict()
-        # Non-zero exit on drift; stable JSON body either way.
-        if not report.healthy:
-            return _err(json.dumps(body, sort_keys=True))
-        return _ok(body)
-
-    return _err(f"unknown doc action: {args.action}")
-
-
-def _handle_hook(args) -> int:
-    """Handle ``cc-policy hook`` subcommands.
-
-    Manifest/doc actions are read-only. Bash lifecycle actions are the runtime
-    side of shell hook adapters: hooks pass raw payloads on stdin and receive a
-    small JSON diagnostic result.
-
-    * ``validate-settings`` (DEC-CLAUDEX-HOOK-MANIFEST-001) —
-      compares repo-owned hook adapter entries in ``settings.json``
-      against ``runtime.core.hook_manifest.HOOK_MANIFEST``, reports
-      drift in both directions plus any repo-owned adapter paths
-      that do not resolve to tracked files on disk.
-    * ``doc-check`` (DEC-CLAUDEX-HOOK-DOC-VALIDATION-001) — reads a
-      candidate ``hooks/HOOKS.md`` from disk, pipes it through
-      ``runtime.core.hook_doc_validation.validate_hook_doc`` against
-      the runtime-compiled hook-doc projection, and reports drift.
-    * ``envelope`` — builds the canonical hook-event envelope from stdin.
-    * ``bash-pre-baseline`` — captures the allowed Bash source baseline.
-    * ``bash-post`` — applies PostToolUse Bash readiness lifecycle updates.
-    """
-    if args.action == "envelope":
-        from runtime.core.hook_envelope import build_hook_event_envelope
-
-        raw = sys.stdin.read()
-        try:
-            payload = json.loads(raw) if raw.strip() else {}
-        except json.JSONDecodeError as exc:
-            return _err(f"hook envelope: invalid JSON on stdin: {exc}")
-        envelope = build_hook_event_envelope(payload)
-        return _ok({"envelope": envelope.as_dict()})
-
-    if args.action == "bash-pre-baseline":
-        from runtime.core import bash_lifecycle as bash_lifecycle_mod
-        from runtime.core.hook_envelope import build_hook_event_envelope
-
-        raw = sys.stdin.read()
-        try:
-            payload = json.loads(raw) if raw.strip() else {}
-        except json.JSONDecodeError as exc:
-            return _err(f"hook bash-pre-baseline: invalid JSON on stdin: {exc}")
-        envelope = build_hook_event_envelope(payload)
-        conn = _get_conn(project_root=envelope.project_root or None)
-        try:
-            result = bash_lifecycle_mod.capture_pre_bash_baseline(conn, payload)
-        finally:
-            conn.close()
-        return _ok({"result": result.as_dict()})
-
-    if args.action == "bash-post":
-        from runtime.core import bash_lifecycle as bash_lifecycle_mod
-        from runtime.core.hook_envelope import build_hook_event_envelope
-
-        raw = sys.stdin.read()
-        try:
-            payload = json.loads(raw) if raw.strip() else {}
-        except json.JSONDecodeError as exc:
-            return _err(f"hook bash-post: invalid JSON on stdin: {exc}")
-        envelope = build_hook_event_envelope(payload)
-        conn = _get_conn(project_root=envelope.project_root or None)
-        try:
-            result = bash_lifecycle_mod.handle_post_bash(conn, payload)
-        finally:
-            conn.close()
-        return _ok({"result": result.as_dict()})
-
-    if args.action == "validate-settings":
-        from pathlib import Path
-
-        settings_path_str = getattr(args, "settings_path", None)
-        # Default: the settings.json at the repo root (parent of runtime/).
-        if settings_path_str:
-            settings_path = Path(settings_path_str).resolve()
-        else:
-            settings_path = (_PROJECT_ROOT / "settings.json").resolve()
-
-        if not settings_path.is_file():
-            return _err(
-                f"hook validate-settings: settings file not found at {settings_path}"
-            )
-
-        try:
-            with settings_path.open() as f:
-                settings = json.load(f)
-        except (OSError, json.JSONDecodeError) as exc:
-            return _err(
-                f"hook validate-settings: failed to read {settings_path}: {exc}"
-            )
-
-        # Determine the repo root that adapter_paths resolve relative to.
-        # When --settings-path is given we trust the file's parent
-        # directory; otherwise we use the computed _PROJECT_ROOT.
-        if settings_path_str:
-            repo_root = settings_path.parent
-        else:
-            repo_root = _PROJECT_ROOT
-
-        # Filesystem existence check: for every repo-owned adapter that
-        # settings.json references, verify the file exists. This is the
-        # part of the validation that cannot live in the pure helper.
-        settings_entries = hook_manifest_mod.extract_repo_owned_entries(settings)
-        missing_paths: list[str] = []
-        seen: set[str] = set()
-        for _event, _matcher, adapter_path in settings_entries:
-            if adapter_path in seen:
-                continue
-            seen.add(adapter_path)
-            full = (repo_root / adapter_path).resolve()
-            if not full.is_file():
-                missing_paths.append(adapter_path)
-
-        report = hook_manifest_mod.validate_settings(
-            settings,
-            missing_files=tuple(sorted(missing_paths)),
-        )
-
-        payload = {
-            "report": report,
-            "settings_path": str(settings_path),
-            "repo_root": str(repo_root),
-        }
-
-        if report["healthy"]:
-            return _ok(payload)
-        # Unhealthy: print structured JSON to stdout (CI-friendly) and
-        # return exit code 1. Follows the same convention as
-        # ``cc-policy shadow parity-invariant``.
-        payload["status"] = "violation"
-        print(json.dumps(payload))
-        return 1
-
-    if args.action == "doc-check":
-        import time as _time
-        from pathlib import Path
-
-        doc_path_str = getattr(args, "doc_path", None)
-        if doc_path_str:
-            doc_path = Path(doc_path_str).resolve()
-        else:
-            doc_path = (_PROJECT_ROOT / "hooks" / "HOOKS.md").resolve()
-
-        if not doc_path.is_file():
-            return _err(
-                f"hook doc-check: hook doc not found at {doc_path}"
-            )
-
-        try:
-            candidate = doc_path.read_text(encoding="utf-8")
-        except OSError as exc:
-            return _err(
-                f"hook doc-check: failed to read {doc_path}: {exc}"
-            )
-
-        # ``repo_root`` in the payload is always ``_PROJECT_ROOT`` —
-        # the runtime compiles the expected body from the currently
-        # loaded ``HOOK_MANIFEST``, which lives under the running
-        # repo, not under ``--doc-path``'s parent. ``doc_path``
-        # tells the user which file the candidate came from;
-        # ``repo_root`` tells them which manifest it was compared
-        # against.
-        repo_root = _PROJECT_ROOT
-
-        # ``generated_at`` is required by the validator but does
-        # NOT affect the content hash (the hash is derived from the
-        # rendered body, which is independent of the timestamp).
-        # Passing ``int(time.time())`` keeps the CLI usable in
-        # production while leaving drift detection deterministic
-        # across repeated calls.
-        report = hook_doc_validation_mod.validate_hook_doc(
-            candidate,
-            generated_at=int(_time.time()),
-        )
-
-        payload = {
-            "report": report,
-            "doc_path": str(doc_path),
-            "repo_root": str(repo_root),
-        }
-
-        if report["healthy"]:
-            return _ok(payload)
-        payload["status"] = "violation"
-        print(json.dumps(payload))
-        return 1
-
-    return _err(f"unknown hook action: {args.action}")
-
-
-def _handle_constitution(args) -> int:
-    """Handle ``cc-policy constitution`` subcommands (read-only registry inspection).
-
-    Actions:
-
-    * ``list``: Emit the full constitution registry contents as JSON —
-      concrete paths and planned area slugs with counts.
-    * ``validate``: Check that every concrete constitution path exists
-      on disk. Exits 0 when healthy, non-zero when any path is missing.
-
-    Both commands are strictly read-only — they do not mutate the
-    registry, the filesystem, or the runtime DB.
-    """
-    from runtime.core import constitution_registry as cr
-
-    if args.action == "list":
-        concrete = [
-            {"name": e.name, "path": e.path, "rationale": e.rationale}
-            for e in cr.concrete_entries()
-        ]
-        planned = [
-            {"name": e.name, "rationale": e.rationale}
-            for e in cr.planned_areas()
-        ]
-        return _ok({
-            "concrete_count": len(concrete),
-            "planned_count": len(planned),
-            "concrete_paths": sorted(cr.CONCRETE_PATHS),
-            "planned_areas": [e.name for e in cr.planned_areas()],
-            "concrete_entries": concrete,
-            "planned_entries": planned,
-        })
-
-    if args.action == "validate":
-        repo_root = Path(getattr(args, "repo_root", None) or _PROJECT_ROOT)
-        missing = []
-        for entry in cr.concrete_entries():
-            full = repo_root / entry.path  # type: ignore[operator]
-            if not full.is_file():
-                missing.append(entry.path)
-
-        payload = {
-            "concrete_count": len(cr.concrete_entries()),
-            "planned_count": len(cr.planned_areas()),
-            "missing_concrete_paths": missing,
-            "planned_areas": [e.name for e in cr.planned_areas()],
-            "healthy": len(missing) == 0,
-            "repo_root": str(repo_root),
-        }
-
-        if payload["healthy"]:
-            return _ok(payload)
-        payload["status"] = "unhealthy"
-        print(json.dumps(payload))
-        return 1
-
-    return _err(f"unknown constitution action: {args.action}")
-
-
-def _handle_decision(args) -> int:
-    """Handle ``cc-policy decision`` subcommands (read-only projection surfaces).
-
-    @decision DEC-CLAUDEX-DECISION-DIGEST-CLI-001
-    Title: cc-policy decision digest is the sole CLI surface that renders the decision-digest projection from the canonical runtime registry
-    Status: proposed (shadow-mode, Phase 7 Slice 14 — decision-digest CLI read-only surface)
-    Rationale: Phase 7 Slice 13 introduced
-      ``runtime.core.decision_digest_projection`` as a pure builder that
-      turns a sequence of ``DecisionRecord`` instances into a
-      ``DecisionDigest`` projection. Slice 14 bridges the canonical
-      decision store to the pure builder via a read-only CLI subcommand
-      so operators and CI can inspect the digest without hand-editing
-      markdown and without writing a digest file. The surface is
-      strictly read-only: it opens the runtime DB via a SQLite URI with
-      ``mode=ro`` (no directory creation, no WAL, no schema bootstrap),
-      lists decisions via
-      ``runtime.core.decision_work_registry.list_decisions``, and feeds
-      the resulting records through
-      ``render_decision_digest`` / ``build_decision_digest_projection``.
-      A missing / unwritable DB surfaces as a clean JSON error from
-      ``_err()``, never as an unhandled ``sqlite3.OperationalError`` and
-      never as a newly-created DB file. No DB writes, no filesystem
-      writes, no schema creation, no events, no mutations.
-
-    Imports for the projection builder and decision-work registry are
-    function-scoped rather than module-scoped so the module-load graph
-    of ``runtime/cli.py`` does not acquire a build-time dependency on
-    either authority. This keeps the shadow-only module-level import
-    discipline of both authorities intact; AST discipline tests pin the
-    module-level invariant explicitly while allowing function-scope use
-    inside this handler.
-
-    Actions:
-
-    * ``digest``: Read decisions from the runtime DB (with optional
-      ``--status`` / ``--scope`` filters), render the decision-digest
-      body via the pure builder, and emit a JSON payload containing the
-      rendered body, the structured projection, the metadata envelope,
-      the included decision ids, the cutoff epoch, and the filters used.
-    * ``digest-check`` (Phase 7 Slice 15): Read decisions from the
-      runtime DB with the same filter/read-only semantics, read a
-      candidate digest file from ``--candidate-path`` (UTF-8, read-only),
-      feed both through the pure validator
-      :func:`decision_digest_projection.validate_decision_digest`, and
-      emit a JSON payload carrying the stable report shape. Exits ``0``
-      when the candidate body matches the projection; exits ``1`` with
-      ``status=violation`` when drift is detected so CI and pre-merge
-      gates can key off the exit code without re-parsing the body.
-    """
-    # Function-scope imports intentional — see module docstring and the
-    # AST discipline tests in test_decision_digest_projection.py /
-    # test_decision_work_registry.py. Both actions share the projection
-    # builder / validator + DB registry, so we import once at the
-    # handler boundary and share the read-only open helper across
-    # branches.
-    if args.action not in {"digest", "digest-check", "ingest-commit", "ingest-range", "drift-check"}:
-        return _err(f"unknown decision action: {args.action}")
-
-    # ----------------------- ingest-commit --------------------------------
-    # Phase 7 Slice 14 — write path: parse commit-message trailers and
-    # upsert matching DEC-* ids into the canonical decisions table.
-    # (DEC-CLAUDEX-DEC-TRAILER-INGEST-001)
-    if args.action == "ingest-commit":
-        sha = getattr(args, "sha", None)
-        if not sha:
-            return _err("decision ingest-commit: --sha is required")
-
-        project_root = getattr(args, "project_root", None) or str(_PROJECT_ROOT)
-        dry_run = getattr(args, "dry_run", False)
-
-        # Function-scope import — shadow-only discipline; must not appear
-        # at module scope.  The ingest module itself imports
-        # decision_work_registry at its own function scope.
-        from runtime.core import decision_trailer_ingest as dti
-
-        # Resolve commit message from the git repo.
-        try:
-            message, author, committed_at = dti.load_commit_message(
-                sha, worktree_path=project_root
-            )
-        except ValueError as exc:
-            return _err(f"decision ingest-commit: {exc}")
-
-        if dry_run:
-            # Dry-run: parse and report without writing.
-            dec_ids = dti.parse_decision_trailers(message)
-            payload = {
-                "sha": sha,
-                "decisions_found": dec_ids,
-                "decisions_ingested": 0,
-                "rows": [],
-                "dry_run": True,
-                "status": "ok",
-            }
-            return _ok(payload)
-
-        # Live ingest: open the DB read-write and call ingest_commit.
-        import sqlite3 as _sqlite3
-
-        from runtime.schemas import ensure_schema
-
-        db_path = default_db_path()
-        try:
-            conn = _sqlite3.connect(str(db_path))
-            conn.row_factory = _sqlite3.Row
-            ensure_schema(conn)
-            rows = dti.ingest_commit(conn, sha, message, author, committed_at)
-            conn.close()
-        except _sqlite3.Error as exc:
-            return _err(
-                f"decision ingest-commit: DB error at {db_path}: {exc}"
-            )
-
-        payload = {
-            "sha": sha,
-            "decisions_ingested": len(rows),
-            "rows": rows,
-            "status": "ok",
-        }
-        return _ok(payload)
-
-    # ----------------------- ingest-range --------------------------------
-    # Phase 7 Slice 15 — batch write path: resolve a git revision range
-    # via ``git rev-list``, iterate SHAs oldest→newest, and call the
-    # existing ``ingest_commit`` per SHA.  No new upsert_decision call
-    # sites — this is a pure orchestrator over ingest_commit.
-    # (DEC-CLAUDEX-DEC-INGEST-BACKFILL-001)
-    if args.action == "ingest-range":
-        range_spec = getattr(args, "range", None)
-        if not range_spec:
-            return _err("decision ingest-range: --range is required")
-
-        project_root = getattr(args, "project_root", None) or str(_PROJECT_ROOT)
-        dry_run = getattr(args, "dry_run", False)
-
-        # Function-scope import — shadow-only discipline; must not appear
-        # at module scope.  (DEC-CLAUDEX-DEC-TRAILER-INGEST-001)
-        from runtime.core import decision_trailer_ingest as dti
-
-        if dry_run:
-            # Dry-run: call ingest_range with dry_run=True — no DB needed.
-            try:
-                result = dti.ingest_range(
-                    None,  # conn is unused in dry-run mode
-                    range_spec,
-                    worktree_path=project_root,
-                    dry_run=True,
-                )
-            except ValueError as exc:
-                return _err(f"decision ingest-range: {exc}")
-            return _ok(result)
-
-        # Live ingest: open the DB read-write, ensure schema, call ingest_range.
-        import sqlite3 as _sqlite3
-
-        from runtime.schemas import ensure_schema
-
-        db_path = default_db_path()
-        try:
-            conn = _sqlite3.connect(str(db_path))
-            conn.row_factory = _sqlite3.Row
-            ensure_schema(conn)
-            result = dti.ingest_range(
-                conn,
-                range_spec,
-                worktree_path=project_root,
-                dry_run=False,
-            )
-            conn.close()
-        except ValueError as exc:
-            return _err(f"decision ingest-range: {exc}")
-        except _sqlite3.Error as exc:
-            return _err(
-                f"decision ingest-range: DB error at {db_path}: {exc}"
-            )
-
-        return _ok(result)
-
-    # ----------------------- drift-check --------------------------------
-    # Phase 7 Slice 16 — read-only drift detection between commit-trailer
-    # evidence (layer 2) and the runtime decision registry (layer 1).
-    # Exits 0 when aligned, 1 when drift detected, ≥2 on fatal error.
-    # (DEC-CLAUDEX-DEC-DRIFT-CHECK-001)
-    if args.action == "drift-check":
-        range_spec = getattr(args, "range", None)
-        if not range_spec:
-            return _err("decision drift-check: --range is required", code=2)
-
-        project_root = getattr(args, "project_root", None) or str(_PROJECT_ROOT)
-        exit_on_drift = getattr(args, "exit_on_drift", True)
-
-        # Function-scope import — shadow-only discipline; must not appear
-        # at module scope.  (DEC-CLAUDEX-DEC-TRAILER-INGEST-001,
-        # DEC-CLAUDEX-DECISION-DIGEST-CLI-001)
-        # Drift-check is read-only: open the DB in read-only mode
-        # (mode=ro primary, mode=ro&immutable=1 fallback) so this command
-        # can never accidentally write to the decisions table.
-        import sqlite3 as _sqlite3
-
-        from runtime.core import decision_trailer_ingest as dti
-
-        db_path = default_db_path()
-
-        def _try_open_ro(uri: str):
-            connection = _sqlite3.connect(uri, uri=True)
-            connection.row_factory = _sqlite3.Row
-            return connection
-
-        ro_uri = f"file:{db_path}?mode=ro"
-        immutable_uri = f"file:{db_path}?mode=ro&immutable=1"
-
-        try:
-            conn_ro = _try_open_ro(ro_uri)
-        except _sqlite3.Error:
-            try:
-                conn_ro = _try_open_ro(immutable_uri)
-            except _sqlite3.Error as exc2:
-                return _err(
-                    f"decision drift-check: failed to read DB at {db_path} "
-                    f"read-only: {exc2}",
-                    code=2,
-                )
-
-        try:
-            result = dti.drift_check(conn_ro, range_spec, worktree_path=project_root)
-        except ValueError as exc:
-            conn_ro.close()
-            return _err(f"decision drift-check: {exc}", code=2)
-        except _sqlite3.Error as exc:
-            conn_ro.close()
-            return _err(f"decision drift-check: DB error at {db_path}: {exc}", code=2)
-        finally:
-            conn_ro.close()
-
-        # Exit-code CI semantics (matches digest-check convention):
-        #   0 = aligned=True, status=ok
-        #   1 = aligned=False, status=ok (drift detected, valid payload)
-        #  ≥2 = status=error (handled above via _err())
-        if result.get("aligned"):
-            return _ok(result)
-        # Drift detected.
-        if not exit_on_drift:
-            return _ok(result)
-        # Exit 1: drift detected and --exit-on-drift (default).
-        print(json.dumps(result))
-        return 1
-
-    # Shared read-only DB open with ``mode=ro`` primary and
-    # ``mode=ro&immutable=1`` fallback (see DEC-CLAUDEX-DECISION-DIGEST-CLI-001
-    # and Phase 7 Slice 14 correction #2). Both ``digest`` and
-    # ``digest-check`` use the exact same read-only open semantics so
-    # there is a single authority for how this CLI touches the DB.
-    # ``db_read_mode`` is surfaced in the successful payload on both
-    # branches so operators can see which path served the request.
-    import sqlite3 as _sqlite3
-
-    from runtime.core import decision_digest_projection as ddp
-    from runtime.core import decision_work_registry as dwr
-
-    def _read_decisions_ro(status_filter, scope_filter, *, subcommand):
-        """Open the runtime DB read-only and return ``(decisions, db_read_mode)``.
-
-        ``subcommand`` is the CLI subcommand name (``"digest"`` or
-        ``"digest-check"``) used only to shape the error message so
-        callers see which surface failed. Returns ``None`` and an
-        ``_err()``-style JSON error code via the nested helper when
-        both open attempts fail.
-        """
-        db_path = default_db_path()
-
-        def _try_read(uri: str):
-            connection = _sqlite3.connect(uri, uri=True)
-            try:
-                connection.row_factory = _sqlite3.Row
-                return dwr.list_decisions(
-                    connection,
-                    status=status_filter,
-                    scope=scope_filter,
-                )
-            finally:
-                connection.close()
-
-        ro_uri = f"file:{db_path}?mode=ro"
-        immutable_uri = f"file:{db_path}?mode=ro&immutable=1"
-
-        try:
-            return _try_read(ro_uri), "ro", None
-        except _sqlite3.Error as exc:
-            first_error = exc
-            try:
-                return _try_read(immutable_uri), "ro_immutable", None
-            except _sqlite3.Error as exc2:
-                return None, None, (
-                    f"decision {subcommand}: failed to read DB at "
-                    f"{db_path} read-only; mode=ro: {first_error}; "
-                    f"mode=ro+immutable=1: {exc2}"
-                )
-
-    # --cutoff-epoch validation (shared). Argparse delivers the raw
-    # string so we can emit a JSON error (consistent with _err())
-    # rather than argparse's stderr error path.
-    subcommand = args.action
-    raw_cutoff = getattr(args, "cutoff_epoch", "0")
-    try:
-        cutoff_epoch = int(raw_cutoff)
-    except (TypeError, ValueError):
-        return _err(
-            f"decision {subcommand}: --cutoff-epoch must be an int; "
-            f"got {raw_cutoff!r}"
-        )
-    if cutoff_epoch < 0:
-        return _err(
-            f"decision {subcommand}: --cutoff-epoch must be non-negative"
-        )
-
-    status_filter = getattr(args, "status", None)
-    scope_filter = getattr(args, "scope", None)
-    filters = {"status": status_filter, "scope": scope_filter}
-
-    if args.action == "digest":
-        # --generated-at validation. Default is the current epoch; the
-        # caller may pin an explicit timestamp for deterministic output.
-        raw_generated = getattr(args, "generated_at", None)
-        if raw_generated is None:
-            import time as _time
-
-            generated_at = int(_time.time())
-        else:
-            try:
-                generated_at = int(raw_generated)
-            except (TypeError, ValueError):
-                return _err(
-                    f"decision digest: --generated-at must be an int; "
-                    f"got {raw_generated!r}"
-                )
-            if generated_at < 0:
-                return _err(
-                    "decision digest: --generated-at must be non-negative"
-                )
-
-        decisions, db_read_mode, err = _read_decisions_ro(
-            status_filter, scope_filter, subcommand="digest"
-        )
-        if err is not None:
-            return _err(err)
-
-        try:
-            rendered_body = ddp.render_decision_digest(
-                decisions, cutoff_epoch=cutoff_epoch
-            )
-            projection = ddp.build_decision_digest_projection(
-                decisions,
-                generated_at=generated_at,
-                cutoff_epoch=cutoff_epoch,
-            )
-        except ValueError as exc:
-            return _err(f"decision digest: {exc}")
-
-        metadata = projection.metadata
-        payload = {
-            "healthy": True,
-            "rendered_body": rendered_body,
-            "projection": {
-                "decision_ids": list(projection.decision_ids),
-                "cutoff_epoch": projection.cutoff_epoch,
-                "content_hash": projection.content_hash,
-            },
-            "metadata": {
-                "generator_version": metadata.generator_version,
-                "generated_at": metadata.generated_at,
-                "stale_condition": {
-                    "rationale": metadata.stale_condition.rationale,
-                    "watched_authorities": list(
-                        metadata.stale_condition.watched_authorities
-                    ),
-                    "watched_files": list(
-                        metadata.stale_condition.watched_files
-                    ),
-                },
-                "source_versions": [
-                    [kind, ver] for (kind, ver) in metadata.source_versions
-                ],
-                "provenance": [
-                    {
-                        "source_kind": ref.source_kind,
-                        "source_id": ref.source_id,
-                        "source_version": ref.source_version,
-                    }
-                    for ref in metadata.provenance
-                ],
-            },
-            "decision_count": len(projection.decision_ids),
-            "decision_ids": list(projection.decision_ids),
-            "cutoff_epoch": projection.cutoff_epoch,
-            "filters": filters,
-            "repo_root": str(_PROJECT_ROOT),
-            "db_read_mode": db_read_mode,
-        }
-        return _ok(payload)
-
-    # ----------------------- digest-check -----------------------------
-    # Phase 7 Slice 15 — read-only decision-digest body drift validation.
-    from pathlib import Path
-
-    candidate_path_str = getattr(args, "candidate_path", None)
-    if not candidate_path_str:
-        return _err(
-            "decision digest-check: --candidate-path is required"
-        )
-    candidate_path = Path(candidate_path_str).resolve()
-    if not candidate_path.is_file():
-        return _err(
-            f"decision digest-check: candidate not found at {candidate_path}"
-        )
-    try:
-        candidate = candidate_path.read_text(encoding="utf-8")
-    except OSError as exc:
-        return _err(
-            f"decision digest-check: failed to read {candidate_path}: {exc}"
-        )
-
-    decisions, db_read_mode, err = _read_decisions_ro(
-        status_filter, scope_filter, subcommand="digest-check"
-    )
-    if err is not None:
-        return _err(err)
-
-    try:
-        report = ddp.validate_decision_digest(
-            candidate, decisions, cutoff_epoch=cutoff_epoch
-        )
-    except ValueError as exc:
-        return _err(f"decision digest-check: {exc}")
-
-    payload = {
-        "report": report,
-        "candidate_path": str(candidate_path),
-        "decision_count": len(report["decision_ids"]),
-        "decision_ids": list(report["decision_ids"]),
-        "cutoff_epoch": cutoff_epoch,
-        "filters": filters,
-        "db_read_mode": db_read_mode,
-        "repo_root": str(_PROJECT_ROOT),
-    }
-
-    if report["healthy"]:
-        return _ok(payload)
-    # Drift: structured JSON on stdout (CI-friendly) + exit code 1.
-    # Matches the convention used by ``cc-policy hook doc-check`` and
-    # ``cc-policy shadow parity-invariant``.
-    payload["status"] = "violation"
-    print(json.dumps(payload))
-    return 1
-
-
-def _handle_prompt_pack(args) -> int:
-    """Handle ``cc-policy prompt-pack`` subcommands (read-only prompt-pack tools).
-
-    Actions:
-
-    * ``check`` (DEC-CLAUDEX-PROMPT-PACK-CHECK-CLI-001): reads a
-      candidate prompt-pack body from ``--candidate-path`` and
-      caller-supplied compiler inputs from ``--inputs-path`` (a
-      JSON file with ``workflow_id``, ``stage_id``, ``layers``,
-      ``generated_at``, and optional ``manifest_version``), then
-      delegates to
-      :func:`runtime.core.prompt_pack_validation.validate_prompt_pack`
-      and reports drift.
-
-    * ``compile`` (DEC-CLAUDEX-PROMPT-PACK-COMPILE-CLI-001): calls
-      the existing single compiler authority
-      :func:`runtime.core.prompt_pack.compile_prompt_pack_for_stage`
-      in **id mode only** (``--goal-id`` + ``--work-item-id``
-      resolved through
-      :func:`runtime.core.workflow_contract_capture.capture_workflow_contracts`)
-      and prints a JSON payload containing the rendered prompt-pack
-      body, the structured :class:`PromptPack` identity fields,
-      the content hash, and the projection metadata. ``LookupError``
-      and ``ValueError`` from the compiler surface as CLI errors
-      with a ``prompt-pack compile:`` prefix — the two error
-      classes are left distinguishable via the underlying
-      exception message, not collapsed into a single shape.
-
-    * ``subagent-start`` (DEC-CLAUDEX-PROMPT-PACK-SUBAGENT-START-CLI-001):
-      thin adapter over
-      :func:`runtime.core.prompt_pack.build_subagent_start_prompt_pack_response`.
-      Accepts a ``--payload`` JSON string carrying the six
-      request-contract fields (``workflow_id``, ``stage_id``,
-      ``goal_id``, ``work_item_id``, ``decision_scope``,
-      ``generated_at``). On success, prints the helper's report
-      shape (``status``, ``healthy``, ``violations``, ``envelope``)
-      as JSON to stdout. Invalid payloads return the same structural
-      ``invalid`` report from the helper. Compile-path errors
-      (``LookupError``/``ValueError``) surface on stderr with a
-      ``prompt-pack subagent-start:`` prefix.
-
-    All three actions are strictly read-only — they do not rewrite
-    any file, do not write to the runtime DB, do not emit any event,
-    and do not execute any prompt-pack consumer. All comparison
-    and compile logic lives in the pure library modules; the CLI
-    layer only handles argument binding, connection management,
-    and payload shaping.
-    """
-    if args.action == "check":
-        from pathlib import Path
-
-        candidate_path = Path(args.candidate_path).resolve()
-        inputs_path = Path(args.inputs_path).resolve()
-
-        if not candidate_path.is_file():
-            return _err(
-                f"prompt-pack check: candidate file not found at {candidate_path}"
-            )
-        if not inputs_path.is_file():
-            return _err(
-                f"prompt-pack check: inputs file not found at {inputs_path}"
-            )
-
-        try:
-            candidate = candidate_path.read_text(encoding="utf-8")
-        except OSError as exc:
-            return _err(
-                f"prompt-pack check: failed to read candidate {candidate_path}: {exc}"
-            )
-
-        try:
-            with inputs_path.open() as f:
-                inputs = json.load(f)
-        except (OSError, json.JSONDecodeError) as exc:
-            return _err(
-                f"prompt-pack check: failed to read inputs {inputs_path}: {exc}"
-            )
-
-        # Validate the top-level inputs shape before delegating to
-        # the compiler. The validator itself raises ValueError on
-        # deep layer / identifier errors; we catch those below.
-        if not isinstance(inputs, dict):
-            return _err(
-                f"prompt-pack check: inputs JSON must be an object; "
-                f"got {type(inputs).__name__}"
-            )
-
-        workflow_id = inputs.get("workflow_id")
-        if not isinstance(workflow_id, str) or not workflow_id:
-            return _err(
-                "prompt-pack check: inputs.workflow_id must be a non-empty string"
-            )
-
-        stage_id = inputs.get("stage_id")
-        if not isinstance(stage_id, str) or not stage_id:
-            return _err(
-                "prompt-pack check: inputs.stage_id must be a non-empty string"
-            )
-
-        layers = inputs.get("layers")
-        if not isinstance(layers, dict):
-            return _err(
-                f"prompt-pack check: inputs.layers must be an object; "
-                f"got {type(layers).__name__ if layers is not None else 'missing'}"
-            )
-
-        generated_at = inputs.get("generated_at")
-        # ``bool`` is a subclass of ``int`` in Python — reject it
-        # explicitly so ``"generated_at": true`` doesn't slip
-        # through as an integer.
-        if isinstance(generated_at, bool) or not isinstance(generated_at, int):
-            return _err(
-                f"prompt-pack check: inputs.generated_at must be an int; "
-                f"got {type(generated_at).__name__}"
-            )
-        if generated_at < 0:
-            return _err(
-                "prompt-pack check: inputs.generated_at must be non-negative"
-            )
-
-        manifest_version = inputs.get("manifest_version")
-        if manifest_version is not None and (
-            not isinstance(manifest_version, str) or not manifest_version
-        ):
-            return _err(
-                "prompt-pack check: inputs.manifest_version must be a "
-                "non-empty string when present"
-            )
-
-        kwargs = {
-            "workflow_id": workflow_id,
-            "stage_id": stage_id,
-            "layers": layers,
-            "generated_at": generated_at,
-        }
-        if manifest_version is not None:
-            kwargs["manifest_version"] = manifest_version
-
-        try:
-            report = prompt_pack_validation_mod.validate_prompt_pack(
-                candidate, **kwargs
-            )
-        except ValueError as exc:
-            # The pure validator raises ValueError for deep layer /
-            # identifier shape problems. Surface that as a CLI
-            # error rather than a drift report, because it means
-            # the caller's inputs are malformed, not that the
-            # candidate drifted from a valid expected body.
-            return _err(f"prompt-pack check: invalid inputs: {exc}")
-
-        payload = {
-            "report": report,
-            "candidate_path": str(candidate_path),
-            "inputs_path": str(inputs_path),
-            "repo_root": str(_PROJECT_ROOT),
-        }
-
-        # Phase 7 Slice 12 — optional metadata validation gate.
-        # @decision DEC-CLAUDEX-PROMPT-PACK-CHECK-CLI-METADATA-001
-        # Title: --metadata-path extends check with metadata-drift validation; overall exit is 0 only when both body and metadata healthy
-        # Status: proposed (Phase 7 Slice 12)
-        # Rationale: Phase 7 Slice 11 made the compiled metadata
-        # envelope meaningful by deriving watched_files from the full
-        # concrete constitution set. A body-only checker cannot detect
-        # a candidate whose body is current while its metadata has
-        # been tampered with or left stale. Activating metadata
-        # validation requires an explicit operator opt-in via
-        # --metadata-path; when active, inputs.watched_files must be
-        # present and well-shaped — otherwise the CLI errors rather
-        # than silently falling back to the direct-builder default.
-        metadata_path_str = getattr(args, "metadata_path", None)
-        if metadata_path_str is not None:
-            metadata_path = Path(metadata_path_str).resolve()
-            if not metadata_path.is_file():
-                return _err(
-                    f"prompt-pack check: metadata file not found at "
-                    f"{metadata_path}"
-                )
-
-            try:
-                with metadata_path.open() as f:
-                    candidate_metadata = json.load(f)
-            except (OSError, json.JSONDecodeError) as exc:
-                return _err(
-                    f"prompt-pack check: failed to read metadata "
-                    f"{metadata_path}: {exc}"
-                )
-            if not isinstance(candidate_metadata, dict):
-                return _err(
-                    f"prompt-pack check: metadata JSON must be an "
-                    f"object; got {type(candidate_metadata).__name__}"
-                )
-
-            watched_files_raw = inputs.get("watched_files")
-            if watched_files_raw is None:
-                return _err(
-                    "prompt-pack check: --metadata-path requires "
-                    "inputs.watched_files to be present"
-                )
-            if not isinstance(watched_files_raw, list):
-                return _err(
-                    f"prompt-pack check: inputs.watched_files must be a "
-                    f"list of non-empty strings; got "
-                    f"{type(watched_files_raw).__name__}"
-                )
-            for wf in watched_files_raw:
-                if not isinstance(wf, str) or not wf:
-                    return _err(
-                        "prompt-pack check: inputs.watched_files "
-                        "must be a list of non-empty strings"
-                    )
-            watched_files_tuple = tuple(watched_files_raw)
-
-            metadata_kwargs = {
-                "workflow_id": workflow_id,
-                "stage_id": stage_id,
-                "layers": layers,
-                "generated_at": generated_at,
-                "watched_files": watched_files_tuple,
-            }
-            if manifest_version is not None:
-                metadata_kwargs["manifest_version"] = manifest_version
-
-            try:
-                metadata_report = (
-                    prompt_pack_validation_mod.validate_prompt_pack_metadata(
-                        candidate_metadata, **metadata_kwargs
-                    )
-                )
-            except ValueError as exc:
-                return _err(
-                    f"prompt-pack check: invalid metadata inputs: {exc}"
-                )
-
-            payload["metadata_report"] = metadata_report
-            payload["metadata_path"] = str(metadata_path)
-
-            overall_healthy = bool(report["healthy"]) and bool(
-                metadata_report["healthy"]
-            )
-            if overall_healthy:
-                return _ok(payload)
-            payload["status"] = "violation"
-            print(json.dumps(payload))
-            return 1
-
-        if report["healthy"]:
-            return _ok(payload)
-        payload["status"] = "violation"
-        print(json.dumps(payload))
-        return 1
-
-    if args.action == "compile":
-        # @decision DEC-CLAUDEX-PROMPT-PACK-COMPILE-CLI-001
-        # Title: cc-policy prompt-pack compile is the operator-preview surface on top of the single compiler authority
-        # Status: proposed (shadow-mode, Phase 2 prompt-pack operator preview)
-        # Rationale: The compile helper is already the single
-        # compiler authority (DEC-CLAUDEX-PROMPT-PACK-COMPILE-FOR-
-        # STAGE-001) and already supports id-mode resolution
-        # (DEC-CLAUDEX-PROMPT-PACK-COMPILE-MODE-SELECTION-001).
-        # This CLI surface is a thin adapter: it collects argv,
-        # opens a runtime connection, calls the helper in id mode,
-        # and prints a JSON payload rich enough for an operator to
-        # preview the compiled result without re-running the
-        # compiler. It does not duplicate any compile logic.
-        #
-        # Function-scope import deliberately — the module-level
-        # CLI import surface continues to forbid any direct
-        # ``runtime.core.prompt_pack`` import, so the shadow-only
-        # discipline guard can walk only ``tree.body`` (the
-        # module-level statements) and still pin that the compiler
-        # is not promoted to an always-loaded CLI dependency.
-        from runtime.core import prompt_pack as prompt_pack_mod
-
-        workflow_id = args.workflow_id
-        stage_id = args.stage_id
-        goal_id = args.goal_id
-        work_item_id = args.work_item_id
-        decision_scope = args.decision_scope
-        generated_at = args.generated_at
-
-        if generated_at < 0:
-            return _err(
-                "prompt-pack compile: --generated-at must be non-negative"
-            )
-
-        # When --finding flags are given, pass the explicit tuple.
-        # When absent (empty list from argparse default), pass None
-        # so the state capture reads live findings from the ledger.
-        raw_findings = getattr(args, "finding", None) or []
-        findings = tuple(raw_findings) if raw_findings else None
-        current_branch = getattr(args, "current_branch", None) or None
-        worktree_path = getattr(args, "worktree_path", None) or None
-        manifest_version = (
-            getattr(args, "manifest_version", None)
-            or prompt_pack_mod.MANIFEST_VERSION
-        )
-
-        # Function-scope imports of the other shadow-kernel helpers
-        # — needed because the CLI also re-renders the body for the
-        # operator-preview payload. Putting them next to the
-        # ``prompt_pack`` import above keeps the module-load graph
-        # unchanged and lets the shadow-discipline guard continue
-        # to pin the allowed import surface narrowly.
-        from runtime.core import prompt_pack_decisions as _ppd
-        from runtime.core import prompt_pack_resolver as _ppr
-        from runtime.core import prompt_pack_state as _pps
-        from runtime.core import workflow_contract_capture as _wcap
-
-        conn = _get_conn()
-        try:
-            try:
-                pack = prompt_pack_mod.compile_prompt_pack_for_stage(
-                    conn,
-                    workflow_id=workflow_id,
-                    stage_id=stage_id,
-                    goal_id=goal_id,
-                    work_item_id=work_item_id,
-                    decision_scope=decision_scope,
-                    generated_at=generated_at,
-                    unresolved_findings=findings,
-                    current_branch=current_branch,
-                    worktree_path=worktree_path,
-                    manifest_version=manifest_version,
-                )
-            except LookupError as exc:
-                return _err(f"prompt-pack compile: {exc}")
-            except ValueError as exc:
-                return _err(f"prompt-pack compile: {exc}")
-
-            # Re-render the prompt-pack body from the same
-            # canonical layer resolution so the operator can
-            # inspect the exact text the compiled PromptPack
-            # represents. ``compile_prompt_pack_for_stage`` stores
-            # the hash of this body on the PromptPack; recomputing
-            # the layers here is deterministic and deliberately
-            # avoids a second compiler authority. If the two ever
-            # disagreed that would be a correctness bug in
-            # build_prompt_pack, which the test suite already pins.
-            goal_contract, work_item_contract = (
-                _wcap.capture_workflow_contracts(
-                    conn, goal_id=goal_id, work_item_id=work_item_id
-                )
-            )
-            # DEC-CLAUDEX-PROMPT-PACK-SCOPE-AUTHORITY-001: load enforcement-
-            # authority scope so the compiled prompt-pack summary derives
-            # from the same row policy enforcement consults.
-            from runtime.core import workflows as _workflows_scope_mod
-            _wf_scope_record = _workflows_scope_mod.get_scope(conn, workflow_id)
-            workflow_summary = _ppr.workflow_summary_from_contracts(
-                workflow_id=workflow_id,
-                goal=goal_contract,
-                work_item=work_item_contract,
-                workflow_scope_record=_wf_scope_record,
-            )
-            decision_records = _ppd.capture_relevant_decisions(
-                conn, scope=decision_scope
-            )
-            decision_summary = _ppr.local_decision_summary_from_records(
-                decisions=decision_records
-            )
-            snapshot = _pps.capture_runtime_state_snapshot(
-                conn,
-                workflow_id=workflow_id,
-                unresolved_findings=findings,
-                work_item_id=work_item_id,
-                current_branch=current_branch,
-                worktree_path=worktree_path,
-            )
-            runtime_state_summary = _ppr.runtime_state_summary_from_snapshot(
-                snapshot=snapshot
-            )
-            layers = _ppr.resolve_prompt_pack_layers(
-                stage=stage_id,
-                workflow_summary=workflow_summary,
-                decision_summary=decision_summary,
-                runtime_state_summary=runtime_state_summary,
-            )
-            rendered_body = prompt_pack_mod.render_prompt_pack(
-                workflow_id=workflow_id,
-                stage_id=stage_id,
-                layers=layers,
-            )
-        finally:
-            conn.close()
-
-        # Structured operator-preview payload. Mirrors the shape
-        # ``prompt_pack_validation`` callers already expect for
-        # PromptPack fields, plus the rendered body and the
-        # decoded metadata.
-        #
-        # @decision DEC-CLAUDEX-PROMPT-PACK-METADATA-SERIALISER-SINGLE-AUTHORITY-001
-        # Title: CLI compile routes metadata shape through the public prompt_pack_validation.serialise_prompt_pack_metadata helper
-        # Status: proposed (Phase 7 Slice 12 correction)
-        # Rationale: Slice 12 introduced the rebuild-via-compiler
-        # metadata validator whose expected output is shaped by
-        # ``serialise_prompt_pack_metadata``. If this CLI path also
-        # constructed the metadata dict inline, there would be two
-        # authorities for the on-wire metadata shape and a later
-        # field addition in one place would silently drift from the
-        # other. Calling the public helper makes the serialiser the
-        # single authority for the JSON shape of
-        # ``pack.metadata`` — the CLI emits exactly what the
-        # validator rebuilds.
-        payload = {
-            "workflow_id": pack.workflow_id,
-            "stage_id": pack.stage_id,
-            "layer_names": list(pack.layer_names),
-            "content_hash": pack.content_hash,
-            "rendered_body": rendered_body,
-            "metadata": prompt_pack_validation_mod.serialise_prompt_pack_metadata(
-                pack.metadata
-            ),
-            "inputs": {
-                "goal_id": goal_id,
-                "work_item_id": work_item_id,
-                "decision_scope": decision_scope,
-                "unresolved_findings": list(findings) if findings is not None else None,
-                "current_branch": current_branch,
-                "worktree_path": worktree_path,
-                "manifest_version": manifest_version,
-            },
-            # Phase 7 Slice 2: derived revalidation contract. Writing
-            # ``rendered_body`` and ``validation_inputs`` to files and
-            # invoking ``cc-policy prompt-pack check`` must produce
-            # exit 0 with ``healthy=True`` and matching hash. This
-            # closes the derived-surface freshness gap: a compiled
-            # artifact can be revalidated from the compile output
-            # alone without the caller reconstructing layers.
-            #
-            # Phase 7 Slice 12: extended ``validation_inputs`` with
-            # ``watched_files`` so metadata-path revalidation (the new
-            # ``prompt-pack check --metadata-path`` mode) can rebuild
-            # the expected ``stale_condition.watched_files`` tuple
-            # without the caller reconstructing the full concrete
-            # constitution set. The value is sourced from
-            # ``pack.metadata.stale_condition.watched_files`` in
-            # deterministic order — the same authority the compile
-            # path already derived from
-            # ``prompt_pack_resolver.constitution_watched_files()``.
-            "validation_inputs": {
-                "workflow_id": workflow_id,
-                "stage_id": stage_id,
-                "layers": {k: v for k, v in layers.items()},
-                "generated_at": generated_at,
-                "manifest_version": manifest_version,
-                "watched_files": list(
-                    pack.metadata.stale_condition.watched_files
-                ),
-            },
-        }
-        return _ok(payload)
-
-    if args.action == "subagent-start":
-        # @decision DEC-CLAUDEX-PROMPT-PACK-SUBAGENT-START-CLI-001
-        # Title: subagent-start CLI is a thin adapter over build_subagent_start_prompt_pack_response
-        # Status: proposed (Phase 2 hook-adapter reduction)
-        # Rationale: Function-scope import keeps the module-level import surface clean.
-        # The helper owns all validation and compilation logic; the CLI only handles
-        # argparse binding, JSON decode, connection management, and exit-code shaping.
-        from runtime.core import prompt_pack as prompt_pack_mod
-
-        try:
-            payload = json.loads(args.payload)
-        except json.JSONDecodeError as exc:
-            return _err(f"prompt-pack subagent-start: payload is not valid JSON: {exc}")
-
-        conn = _get_conn()
-        try:
-            try:
-                report = prompt_pack_mod.build_subagent_start_prompt_pack_response(conn, payload)
-            except (LookupError, ValueError) as exc:
-                return _err(f"prompt-pack subagent-start: {exc}")
-        finally:
-            conn.close()
-
-        if report["healthy"]:
-            return _ok(report)
-        print(json.dumps(report))
-        return 1
-
-    return _err(f"unknown prompt-pack action: {args.action}")
-
-
-def _handle_shadow(args) -> int:
-    """Handle ``cc-policy shadow`` subcommands (read-only shadow observer tools).
-
-    DEC-CLAUDEX-SHADOW-PARITY-001: the actions here are strictly read-only —
-    no emits, no writes, no migrations. Two actions are supported:
-
-    * ``parity-report`` — aggregate recent ``shadow_stage_decision`` events
-      into a JSON summary by reason code. Always exits 0.
-    * ``parity-invariant`` — same aggregation, but exits non-zero when the
-      report shows any ``has_unspecified_divergence`` or ``has_unknown_reason``
-      condition. Output format includes the full report plus a structured
-      ``invariant`` dict with ``healthy``, ``violations``, and ``details``
-      fields so CI consumers can render the failure without re-parsing.
-    """
-    conn = _get_conn()
-    try:
-        if args.action == "parity-report":
-            rows = events_mod.query(
-                conn,
-                type="shadow_stage_decision",
-                source=getattr(args, "source", None),
-                since=getattr(args, "since", None),
-                limit=getattr(args, "limit", 200),
-            )
-            report = shadow_parity_mod.summarize(rows)
-            return _ok({"report": report})
-
-        if args.action == "parity-invariant":
-            rows = events_mod.query(
-                conn,
-                type="shadow_stage_decision",
-                source=getattr(args, "source", None),
-                since=getattr(args, "since", None),
-                limit=getattr(args, "limit", 200),
-            )
-            report = shadow_parity_mod.summarize(rows)
-            invariant = shadow_parity_mod.check_invariants(report)
-            payload = {
-                "report": report,
-                "invariant": invariant,
-            }
-            if invariant["healthy"]:
-                return _ok(payload)
-            # Unhealthy: print structured JSON to stdout (CI-friendly) and
-            # return non-zero. This is a deliberate departure from _err(),
-            # which writes to stderr — the full report is useful either way
-            # and consumers should always be able to parse stdout.
-            payload["status"] = "violation"
-            print(json.dumps(payload))
-            return 1
-    finally:
-        conn.close()
-    return _err(f"unknown shadow action: {args.action}")
-
-
 def _provision_worktree(
     conn,
     workflow_id: str,
@@ -1794,8 +341,6 @@ def _provision_worktree(
     """Core provision logic: filesystem-first, then DB writes, with partial-failure cleanup.
 
     Provision sequence (DEC-GUARD-WT-008 R3, DEC-GUARD-WT-002):
-      0. If the base repo is unborn (no HEAD yet), create a one-time bootstrap
-         commit in the project root so git worktree add has a valid base commit.
       1. Compute worktree_path and branch from project_root + feature_name.
       2. Filesystem check: does the path already exist? → already_exists path.
       3. git worktree add (subprocess) — filesystem is created BEFORE any DB write.
@@ -1838,138 +383,15 @@ def _provision_worktree(
       lease for completion record submission. The Guardian lease must be at PROJECT_ROOT,
       not at the worktree path. This function issues it here so check-guardian.sh can
       find it after the guardian agent runs `cc-policy worktree provision`.
-
-    @decision DEC-GUARD-WT-009
-    Title: worktree provision may initialize an unborn base repo before branching
-    Status: accepted
-    Rationale: A fresh repo's first commit is not a reviewed landing and cannot
-      belong to `guardian:land`; yet `git worktree add` refuses to branch from an
-      unborn repo with no HEAD. The runtime provision authority owns the narrow,
-      one-time repair: when project_root has no HEAD, it materializes a bootstrap
-      commit directly via subprocess before any worktree branch is created. This
-      does NOT widen the shell-level `can_land_git` capability and only applies
-      while the repo is unborn.
     """
     import os as _os
     import subprocess as _subprocess
 
     from runtime.core.policy_utils import normalize_path
 
-    def _run_git_checked(*git_args: str) -> str:
-        result = _subprocess.run(
-            ["git", "-C", project_root, *git_args],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            stderr = result.stderr.strip() or result.stdout.strip() or "git command failed"
-            raise RuntimeError(f"`git {' '.join(git_args)}` failed: {stderr}")
-        return result.stdout.strip()
-
-    def _repo_has_head() -> bool:
-        result = _subprocess.run(
-            ["git", "-C", project_root, "rev-parse", "--verify", "HEAD"],
-            capture_output=True,
-            text=True,
-        )
-        return result.returncode == 0
-
-    def _bootstrap_commit_candidates() -> list[str]:
-        result = _subprocess.run(
-            [
-                "git",
-                "-C",
-                project_root,
-                "ls-files",
-                "--cached",
-                "--modified",
-                "--deleted",
-                "--others",
-                "--exclude-standard",
-                "-z",
-            ],
-            capture_output=True,
-            check=False,
-        )
-        if result.returncode != 0:
-            return []
-        candidates: list[str] = []
-        seen: set[str] = set()
-        for raw in result.stdout.decode("utf-8", errors="replace").split("\x00"):
-            path = raw.strip()
-            if not path:
-                continue
-            if path == ".claude" or path.startswith(".claude/"):
-                continue
-            if path == ".worktrees" or path.startswith(".worktrees/"):
-                continue
-            if path == "tmp" or path.startswith("tmp/"):
-                continue
-            if path in seen:
-                continue
-            seen.add(path)
-            candidates.append(path)
-        return candidates
-
-    def _initialize_unborn_repo() -> dict:
-        branch_name = _run_git_checked("symbolic-ref", "--short", "HEAD")
-        commit_message = f"chore: initialize repository for workflow {workflow_id}"
-        candidates = _bootstrap_commit_candidates()
-        if candidates:
-            add_cmd = ["git", "-C", project_root, "add", "--all", "--", *candidates]
-            add_result = _subprocess.run(add_cmd, capture_output=True, text=True)
-            if add_result.returncode != 0:
-                stderr = (
-                    add_result.stderr.strip()
-                    or add_result.stdout.strip()
-                    or "git add failed"
-                )
-                raise RuntimeError(f"bootstrap initialization add failed: {stderr}")
-        commit_args = ["git", "-C", project_root, "commit", "--allow-empty", "-m", commit_message]
-        commit_result = _subprocess.run(commit_args, capture_output=True, text=True)
-        if commit_result.returncode != 0:
-            stderr = (
-                commit_result.stderr.strip()
-                or commit_result.stdout.strip()
-                or "git commit failed"
-            )
-            raise RuntimeError(f"bootstrap initialization commit failed: {stderr}")
-        commit_sha = _run_git_checked("rev-parse", "HEAD")
-        events_mod.emit(
-            conn,
-            "workflow.bootstrap.repo_initialized",
-            source=f"workflow:{workflow_id}",
-            detail=json.dumps(
-                {
-                    "workflow_id": workflow_id,
-                    "project_root": project_root,
-                    "branch": branch_name,
-                    "commit_sha": commit_sha,
-                    "commit_message": commit_message,
-                    "path_count": len(candidates),
-                },
-                sort_keys=True,
-            ),
-        )
-        return {
-            "repo_initialized": True,
-            "bootstrap_commit_sha": commit_sha,
-            "bootstrap_commit_message": commit_message,
-            "bootstrap_commit_path_count": len(candidates),
-        }
-
     project_root = normalize_path(project_root)
     branch = f"feature/{feature_name}"
     worktree_path = _os.path.join(project_root, ".worktrees", f"feature-{feature_name}")
-    repo_init = {
-        "repo_initialized": False,
-        "bootstrap_commit_sha": None,
-        "bootstrap_commit_message": None,
-        "bootstrap_commit_path_count": 0,
-    }
-
-    if not _repo_has_head():
-        repo_init = _initialize_unborn_repo()
 
     # --- Step 1: Filesystem check (DEC-GUARD-WT-008 R3) ---
     already_exists = _os.path.exists(worktree_path)
@@ -2072,249 +494,11 @@ def _provision_worktree(
         "implementer_lease_id": i_lease["lease_id"],
         "workflow_id": workflow_id,
         "already_exists": already_exists,
-        **repo_init,
     }
 
 
-def _retire_worktree(
-    conn,
-    workflow_id: str,
-    project_root: str,
-    worktree_path: str,
-    branch: str,
-    force: bool = False,
-) -> dict:
-    """Atomic worktree retire: worktree remove, branch -d, registry soft-delete, lease revocation.
-
-    Retire sequence (symmetric to _provision_worktree, DEC-WT-RETIRE-001):
-      1. Guardian lease is acquired at PROJECT_ROOT (never at the feature path —
-         DEC-WT-RETIRE-002). The lease outlives the worktree disappearing mid-op.
-      2. Pre-flight unmerged check: git merge-base --is-ancestor validates branch
-         is merged before any git mutation (DEC-WT-RETIRE-003a). Failure here
-         leaves zero state mutated; caller may fix cause and retry.
-      3. git worktree remove <path>. Must run BEFORE branch -d — git refuses
-         branch -d on a branch that is currently checked out in any worktree
-         (DEC-WT-RETIRE-003a supersedes DEC-WT-RETIRE-003).
-         Rollback: if this fails, branch still exists, registry unchanged; retry from here.
-      4. git branch -d <branch> (or -D if force=True). Runs AFTER worktree remove
-         so the branch is no longer checked out.
-         Rollback: if this fails after step 3, worktree is gone but branch still
-         exists and registry is unchanged; next retry observes (worktree-gone,
-         branch-still-exists, registry-still-active) and converges from branch -d.
-      5. worktrees.remove(path) — soft-delete sets removed_at (DEC-RT-001).
-         Idempotent; next retry converges.
-      6. Explicit revocation of all active leases anchored to worktree_path.
-         Must NOT call revoke_missing_worktrees() — that janitor is for leak
-         recovery; retire owns its cleanup explicitly (DEC-WT-RETIRE-004).
-      7. Guardian PROJECT_ROOT lease released in finally so it never strands.
-
-    Rollback boundaries (DEC-GUARD-WT-008 R3 / DEC-WT-RETIRE-003a):
-      - Step 2 failure: nothing mutated; caller may fix cause (merge or --force) and retry.
-      - Step 3 failure: branch and registry unchanged; retry from step 3.
-      - Step 4 failure after step 3: worktree gone, branch still exists, registry active;
-        next retry converges from branch -d.
-      - Step 5 failure: worktrees.remove is idempotent; next retry converges.
-
-    @decision DEC-WT-RETIRE-001
-    Title: _retire_worktree mirrors _provision_worktree as the sole atomic cleanup authority
-    Status: accepted
-    Rationale: Provision and retire must be symmetric runtime functions. There must
-      be no agent-side prose path or safe_cleanup script that substitutes for this
-      function. Retire issues a Guardian lease at PROJECT_ROOT, runs three git ops,
-      soft-deletes the registry row, and explicitly revokes leases. Guardian calls
-      cc-policy worktree retire after a successful landing — check-guardian.sh
-      reads the LANDING_RESULT and WORKTREE_RETIRED trailers.
-
-    @decision DEC-WT-RETIRE-002
-    Title: Retire Guardian lease anchored at project_root, never the feature worktree path
-    Status: accepted
-    Rationale: Provision issues the Guardian lease at project_root so check-guardian.sh
-      can find it via lease_context(PROJECT_ROOT). Retire must match this anchor: if
-      retire anchored its lease at the feature path, that lease would disappear with the
-      worktree mid-operation. The project_root anchor survives the entire retire sequence
-      and is released in finally, preventing stranded leases.
-
-    @decision DEC-WT-RETIRE-003
-    Title: branch -d ordered before worktree remove (superseded by DEC-WT-RETIRE-003a)
-    Status: superseded
-    Rationale: Original planner-approved ordering. Superseded because git refuses
-      branch -d on a branch that is checked out in a live worktree. See DEC-WT-RETIRE-003a.
-
-    @decision DEC-WT-RETIRE-003a
-    Title: git worktree remove runs before git branch -d (actual ordering)
-    Status: accepted
-    Rationale: git refuses branch -d on a branch that is currently checked out in any
-      worktree. The fail-before-mutation invariant for unmerged branches is preserved via
-      an explicit git merge-base --is-ancestor pre-flight check (step 2) that runs before
-      either git mutation. The atomicity guarantee (Guardian PROJECT_ROOT lease covers both
-      git ops) is unchanged. If step 3 (worktree remove) fails, branch and registry are
-      untouched. If step 4 (branch -d) fails after step 3, the worktree is gone but the
-      branch still exists and the registry row is still active; the next retry converges
-      from branch -d alone.
-
-    @decision DEC-WT-RETIRE-004
-    Title: Retire explicitly revokes leases by path — does not call revoke_missing_worktrees
-    Status: accepted
-    Rationale: revoke_missing_worktrees() is a janitor function for leak recovery (it scans
-      all active leases and checks os.path.exists). Using it as the primary cleanup path
-      for retire would: (a) conflate intentional cleanup with accidental path loss,
-      (b) create a race window between worktree remove and the path-existence check, and
-      (c) make the revocation dependent on filesystem state rather than explicit lease IDs.
-      Retire revokes leases by worktree_path filter BEFORE the worktree is removed from
-      disk, ensuring deterministic lease cleanup regardless of filesystem timing.
-    """
-    import os as _os
-    import subprocess as _subprocess
-
-    from runtime.core.policy_utils import normalize_path
-
-    project_root = normalize_path(project_root)
-    canonical_wt_path = normalize_path(worktree_path)
-
-    # --- Step 1: Issue Guardian lease at PROJECT_ROOT (DEC-WT-RETIRE-002) ---
-    # Acquired before any mutation. Released in finally to prevent stranding.
-    g_lease = leases_mod.issue(
-        conn,
-        role="guardian",
-        worktree_path=project_root,
-        workflow_id=workflow_id,
-        branch=branch,
-        requires_eval=False,
-    )
-    retire_lease_id = g_lease["lease_id"]
-
-    try:
-        # --- Step 2: Pre-flight unmerged check (DEC-WT-RETIRE-003a) ---
-        # git branch -d cannot run while the branch is checked out in a worktree,
-        # so worktree remove (step 3) must run before branch -d (step 4). To preserve
-        # the "fail before any mutation" invariant for unmerged branches, we check
-        # merge status HERE before touching either filesystem or registry. This
-        # replaces what would have been an implicit git branch -d error with an
-        # explicit pre-flight that leaves zero state mutated on failure.
-        if not force:
-            # Check if branch has been merged into HEAD of the main repo.
-            # git merge-base --is-ancestor <branch> HEAD returns 0 if merged.
-            r_merged = _subprocess.run(
-                ["git", "-C", project_root, "merge-base", "--is-ancestor", branch, "HEAD"],
-                capture_output=True,
-                text=True,
-            )
-            if r_merged.returncode != 0:
-                raise RuntimeError(
-                    f"Branch '{branch}' has not been fully merged into HEAD "
-                    f"(git merge-base --is-ancestor returned {r_merged.returncode}). "
-                    f"Use --force to delete an unmerged branch."
-                )
-
-        # --- Step 3: git worktree remove (DEC-WT-RETIRE-003a) ---
-        # Must run BEFORE branch -d: git refuses to delete a branch that is checked
-        # out in a live worktree. After worktree remove, the branch is detached from
-        # the working tree and branch -d (step 4) will succeed.
-        # Rollback: if this fails, branch still exists, registry unchanged — retry from here.
-        r_wt = _subprocess.run(
-            ["git", "-C", project_root, "worktree", "remove", canonical_wt_path],
-            capture_output=True,
-            text=True,
-        )
-        if r_wt.returncode != 0:
-            stderr = r_wt.stderr.strip() or r_wt.stdout.strip() or "git worktree remove failed"
-            raise RuntimeError(f"`git worktree remove {canonical_wt_path}` failed: {stderr}")
-
-        # --- Step 4: git branch -d (or -D if force) (DEC-WT-RETIRE-003a) ---
-        # Worktree is removed so branch is no longer checked out; -d will succeed.
-        # Rollback: if -d fails here, worktree is removed but branch still exists
-        # and registry row is still active; next retry converges from branch -d alone.
-        delete_flag = "-D" if force else "-d"
-        r_branch = _subprocess.run(
-            ["git", "-C", project_root, "branch", delete_flag, branch],
-            capture_output=True,
-            text=True,
-        )
-        if r_branch.returncode != 0:
-            stderr = r_branch.stderr.strip() or r_branch.stdout.strip() or "git branch delete failed"
-            raise RuntimeError(f"`git branch {delete_flag} {branch}` failed: {stderr}")
-
-        # --- Step 4: worktrees.remove() — soft-delete (DEC-RT-001) ---
-        # idempotent against already-removed paths; next retry converges.
-        worktrees_mod.remove(conn, canonical_wt_path)
-
-        # --- Step 5: Explicit lease revocation by worktree_path (DEC-WT-RETIRE-004) ---
-        # Revoke BEFORE path disappears so revocation is deterministic.
-        # Uses list_leases + revoke rather than revoke_missing_worktrees (forbidden).
-        revoked_ids: list[str] = []
-        active_leases = leases_mod.list_leases(
-            conn, status="active", worktree_path=canonical_wt_path
-        )
-        for lease in active_leases:
-            lid = lease["lease_id"]
-            if lid == retire_lease_id:
-                # Skip our own retire lease — released in finally.
-                continue
-            leases_mod.revoke(conn, lid)
-            revoked_ids.append(lid)
-
-        # Emit success event (mirrors workflow.bootstrap.repo_initialized pattern).
-        events_mod.emit(
-            conn,
-            "workflow.retire.completed",
-            source=f"workflow:{workflow_id}",
-            detail=json.dumps(
-                {
-                    "workflow_id": workflow_id,
-                    "project_root": project_root,
-                    "worktree_path": canonical_wt_path,
-                    "branch": branch,
-                    "force": force,
-                    "revoked_lease_ids": revoked_ids,
-                },
-                sort_keys=True,
-            ),
-        )
-
-        return {
-            "worktree_path": canonical_wt_path,
-            "branch": branch,
-            "workflow_id": workflow_id,
-            "force": force,
-            "revoked_lease_ids": revoked_ids,
-            "retire_lease_id": retire_lease_id,
-        }
-
-    except Exception as exc:
-        # Emit failure event before re-raising.
-        try:
-            events_mod.emit(
-                conn,
-                "workflow.retire.failed",
-                source=f"workflow:{workflow_id}",
-                detail=json.dumps(
-                    {
-                        "workflow_id": workflow_id,
-                        "project_root": project_root,
-                        "worktree_path": canonical_wt_path,
-                        "branch": branch,
-                        "error": str(exc),
-                    },
-                    sort_keys=True,
-                ),
-            )
-        except Exception:
-            pass  # Do not mask the original error
-        raise
-
-    finally:
-        # Always release the Guardian lease so it never strands (DEC-WT-RETIRE-002).
-        try:
-            leases_mod.release(conn, retire_lease_id)
-        except Exception:
-            pass  # Best-effort; cleanup failure does not mask original error
-
-
 def _handle_worktree(args) -> int:
-    worktree_db_root = None
-    if args.action in ("provision", "retire"):
-        worktree_db_root = getattr(args, "project_root", None) or None
-    conn = _get_conn(project_root=worktree_db_root)
+    conn = _get_conn()
     try:
         if args.action == "register":
             worktrees_mod.register(
@@ -2368,74 +552,542 @@ def _handle_worktree(args) -> int:
 
             return _ok(result)
 
-        elif args.action == "retire":
-            import os as _os
-
-            # Resolve project_root from args or CLAUDE_PROJECT_DIR env var
-            project_root = getattr(args, "project_root", None) or ""
-            if not project_root:
-                project_root = _os.environ.get("CLAUDE_PROJECT_DIR", "")
-            if not project_root:
-                return _err(
-                    "worktree retire: --project-root is required (or set CLAUDE_PROJECT_DIR)"
-                )
-
-            workflow_id = getattr(args, "workflow_id", None) or ""
-            if not workflow_id:
-                return _err("worktree retire: --workflow-id is required")
-
-            feature_name = getattr(args, "feature_name", None) or ""
-            if not feature_name:
-                return _err("worktree retire: --feature-name is required")
-
-            force = getattr(args, "force", False)
-
-            # Derive worktree path and branch from project_root + feature_name
-            # (mirrors _provision_worktree derivation exactly)
-            from runtime.core.policy_utils import normalize_path
-            project_root_norm = normalize_path(project_root)
-            branch = f"feature/{feature_name}"
-            worktree_path = _os.path.join(
-                project_root_norm, ".worktrees", f"feature-{feature_name}"
-            )
-
-            # Guard: verify the repo has a HEAD (not unborn)
-            import subprocess as _subprocess
-            head_check = _subprocess.run(
-                ["git", "-C", project_root_norm, "rev-parse", "--verify", "HEAD"],
-                capture_output=True,
-                text=True,
-            )
-            if head_check.returncode != 0:
-                return _err(
-                    "worktree retire: project_root has no HEAD (unborn repo); "
-                    "nothing to retire"
-                )
-
-            try:
-                result = _retire_worktree(
-                    conn,
-                    workflow_id=workflow_id,
-                    project_root=project_root_norm,
-                    worktree_path=worktree_path,
-                    branch=branch,
-                    force=force,
-                )
-            except Exception as exc:
-                return _err(f"worktree retire failed: {exc}")
-
-            return _ok(result)
-
     finally:
         conn.close()
     return _err(f"unknown worktree action: {args.action}")
 
 
+def _recent_user_prompt_hook_cancellations(
+    project_root: Path,
+    *,
+    home: Path | None = None,
+    max_age_seconds: int = 24 * 60 * 60,
+    limit: int = 5,
+) -> list[dict]:
+    projects_dir = (home or Path.home()) / ".claude" / "projects"
+    if not projects_dir.exists():
+        return []
+
+    try:
+        target_root = str(project_root.expanduser().resolve())
+    except Exception:
+        target_root = str(project_root)
+
+    cutoff = time.time() - max_age_seconds
+    transcript_paths = sorted(
+        projects_dir.glob("**/*.jsonl"),
+        key=lambda path: path.stat().st_mtime if path.exists() else 0,
+        reverse=True,
+    )
+
+    cancellations: list[dict] = []
+    for transcript in transcript_paths:
+        try:
+            if transcript.stat().st_mtime < cutoff:
+                continue
+            lines = transcript.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+
+        for line in reversed(lines[-1000:]):
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            attachment = event.get("attachment") or {}
+            if attachment.get("type") != "hook_cancelled":
+                continue
+            if attachment.get("hookName") != "UserPromptSubmit" and attachment.get("hookEvent") != "UserPromptSubmit":
+                continue
+
+            cwd = event.get("cwd") or ""
+            if cwd:
+                try:
+                    if str(Path(cwd).expanduser().resolve()) != target_root:
+                        continue
+                except Exception:
+                    if cwd != target_root:
+                        continue
+
+            cancellations.append(
+                {
+                    "timestamp": event.get("timestamp", ""),
+                    "cwd": cwd,
+                    "session_id": event.get("sessionId", ""),
+                    "duration_ms": attachment.get("durationMs", 0),
+                    "command": attachment.get("command", ""),
+                    "transcript": str(transcript),
+                }
+            )
+            if len(cancellations) >= limit:
+                return cancellations
+
+    return cancellations
+
+
+def _handle_doctor(args) -> int:
+    root = _PROJECT_ROOT
+    checks: list[dict] = []
+
+    def add(name: str, ok: bool, detail: str = "") -> None:
+        checks.append({"name": name, "ok": bool(ok), "detail": detail})
+
+    doctor_project_root_arg = getattr(args, "project_root", "") or ""
+    doctor_project_root = (
+        Path(doctor_project_root_arg).expanduser().resolve()
+        if doctor_project_root_arg
+        else root
+    )
+
+    settings_path = root / "settings.json"
+    settings_data = {}
+    try:
+        settings_data = json.loads(settings_path.read_text())
+        add("settings_json_valid", True, str(settings_path))
+        stop_hook_text = json.dumps(settings_data.get("hooks", {}).get("Stop", []))
+        subagent_hook_text = json.dumps(settings_data.get("hooks", {}).get("SubagentStop", []))
+        add("v6_no_hidden_regular_stop_review_gate", "stop-review-gate-hook.mjs" not in stop_hook_text, "regular Stop has no Codex stop gate")
+        add("v6_result_submit_wired", "v6-result-submit.sh" in subagent_hook_text, "SubagentStop submits claude_ctrl_result")
+    except Exception as exc:
+        add("settings_json_valid", False, str(exc))
+
+    required = [
+        root / "hooks" / "prompt-submit.sh",
+        root / "hooks" / "block-worktree-create.sh",
+        root / "hooks" / "pre-agent.sh",
+        root / "hooks" / "subagent-start.sh",
+        root / "hooks" / "v6-result-submit.sh",
+        root / "runtime" / "cli.py",
+        root / "runtime" / "core" / "stage_machine.py",
+        root / "runtime" / "core" / "stage_runs.py",
+        root / "runtime" / "core" / "prompt_router.py",
+        root / "runtime" / "core" / "critic_runner.py",
+        root / "runtime" / "core" / "critic_worker.py",
+        root / "runtime" / "core" / "dispatch_pump.py",
+        root / "runtime" / "core" / "settings_renderer.py",
+        root / "runtime" / "core" / "landing_readiness.py",
+    ]
+    for path in required:
+        add(f"required_file:{path.relative_to(root)}", path.exists(), str(path))
+
+    cancellations = _recent_user_prompt_hook_cancellations(doctor_project_root)
+    add(
+        "p0_user_prompt_submit_not_cancelled",
+        not cancellations,
+        "no recent UserPromptSubmit hook_cancelled events"
+        if not cancellations
+        else "V6 dispatch disabled this turn: " + json.dumps(cancellations, sort_keys=True),
+    )
+
+    shell_targets = [root / "hooks" / n for n in ("prompt-submit.sh", "block-worktree-create.sh", "pre-agent.sh", "subagent-start.sh", "v6-result-submit.sh")]
+    for path in shell_targets:
+        proc = subprocess.run(["bash", "-n", str(path)], capture_output=True, text=True, timeout=10)
+        add(f"shell_syntax:{path.name}", proc.returncode == 0, proc.stderr.strip())
+
+    try:
+        import sqlite3 as _sqlite3
+
+        mem = _sqlite3.connect(":memory:")
+        mem.row_factory = _sqlite3.Row
+        ensure_schema(mem)
+        add(
+            "default_regular_stop_gate_disabled",
+            enforcement_config_mod.get(mem, "review_gate_regular_stop") == "false",
+            "hidden regular Stop review is explicit opt-in",
+        )
+        add(
+            "default_subagent_review_enabled",
+            enforcement_config_mod.get(mem, "review_gate_subagent_stop") == "true",
+            "dispatch-stage review remains enabled",
+        )
+        route = prompt_router_mod.route_prompt(
+            mem,
+            workflow_id="doctor-v6",
+            worktree_path=str(root),
+            prompt="Create doctor smoke app",
+        )
+        boot = route.get("bootstrap") or {}
+        add("v6_prompt_router_bootstrap", route.get("action") == "bootstrap", route.get("reason", ""))
+        add("v6_bootstrap_ticket", str(boot.get("prompt_prefix", "")).startswith(stage_runs_mod.TICKET_PREFIX), boot.get("prompt_prefix", ""))
+        denied = False
+        try:
+            stage_runs_mod.claim_ticket(mem, ticket_id="missing", subagent_type="planner")
+        except ValueError:
+            denied = True
+        add("pre_agent_missing_ticket_denies", denied, "runtime claim fails closed")
+        ticket_id = (boot.get("ticket") or {}).get("id", "")
+        claimed = stage_runs_mod.claim_ticket(mem, ticket_id=ticket_id, subagent_type="planner")
+        ctx = stage_runs_mod.start_context_for_claimed_ticket(mem, subagent_type="planner", ticket_id=ticket_id)
+        add("subagent_start_exact_ticket_context", bool(ctx and ctx.get("stage_run", {}).get("id")), claimed.get("claim_token", ""))
+        raw = (
+            "```claude_ctrl_result\n"
+            + json.dumps({"stage_run_id": boot["stage_run"]["id"], "stage_id": "planner", "verdict": "next_work_item", "summary": "doctor"})
+            + "\n```"
+        )
+        submitted = stage_runs_mod.extract_and_submit_response(mem, response_text=raw)
+        add("v6_result_extract_submit", submitted.get("validation", {}).get("valid") is True, "planner result accepted")
+        launch = dispatch_pump_mod.next_launch(mem, workflow_id="doctor-v6")
+        add("dispatch_pump_launch", bool(launch.get("found") and launch.get("launch")), launch.get("launch", {}).get("stage_id", ""))
+        settings_out = root / "tmp" / "doctor-settings.json"
+        settings_renderer_mod.render_settings(settings_path, root, settings_out)
+        rendered_text = settings_out.read_text()
+        add("settings_rendered_repo_hooks", str(root / "hooks" / "prompt-submit.sh") in rendered_text, str(settings_out))
+        cache_hooks = root / "plugins" / "cache" / "openai-codex" / "codex" / "1.0.4" / "hooks" / "hooks.json"
+        if cache_hooks.exists():
+            cache_text = cache_hooks.read_text()
+            add("plugin_cache_no_hidden_stop_gate", '"Stop"' not in cache_text and "stop-review-gate-hook" not in cache_text, str(cache_hooks))
+        mem.close()
+    except Exception as exc:
+        add("v6_runtime_smoke", False, str(exc))
+
+    for provider in ("codex", "gemini"):
+        exe = shutil.which(provider)
+        add(f"critic_provider_available:{provider}", bool(exe), exe or "not found; critic-subagent fallback will be used")
+
+    if getattr(args, "exercise_schema_upgrade", False):
+        project_root = doctor_project_root if doctor_project_root_arg else Path.cwd().resolve()
+        source_arg = getattr(args, "schema_upgrade_source_db", "") or ""
+        source_db = Path(source_arg).expanduser().resolve() if source_arg else None
+        if source_db is None:
+            backups = sorted(
+                (project_root / ".claude").glob("state.db.pre-v*.bak"),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
+            if backups:
+                source_db = backups[0]
+        if source_db is None:
+            add(
+                "schema_upgrade_exercise_source",
+                False,
+                f"No stale DB backup found under {project_root / '.claude'}; pass --schema-upgrade-source-db <stale-db>",
+            )
+        else:
+            try:
+                result = exercise_schema_upgrade(str(source_db), require_reset=True)
+                detail = json.dumps(
+                    {
+                        "source_db": result.get("source_db"),
+                        "before_schema_major": result.get("before_schema_major"),
+                        "schema_major": result.get("schema_major"),
+                        "last_reset_reason": result.get("last_reset_reason"),
+                        "archive_exists": result.get("archive_exists"),
+                        "reset_exercised": result.get("reset_exercised"),
+                    },
+                    sort_keys=True,
+                )
+                add("schema_upgrade_exercise", bool(result.get("ok")), detail)
+            except Exception as exc:
+                add("schema_upgrade_exercise", False, str(exc))
+
+    claude_exe = shutil.which("claude")
+    if claude_exe:
+        try:
+            help_proc = subprocess.run([claude_exe, "--help"], capture_output=True, text=True, timeout=10)
+            help_text = help_proc.stdout + help_proc.stderr
+            add("claude_supports_settings_flag", "--settings" in help_text, claude_exe)
+            add("claude_supports_setting_sources", "--setting-sources" in help_text, claude_exe)
+        except Exception as exc:
+            add("claude_help", False, str(exc))
+    else:
+        add("claude_available", False, "claude not found on PATH")
+
+    ok = all(c["ok"] for c in checks if not c["name"].startswith("critic_provider_available:"))
+    return _ok({"ok": ok, "checks": checks})
+
+
+def _handle_prompt(args) -> int:
+    conn = _get_conn()
+    try:
+        prompt = getattr(args, "prompt", "") or ""
+        if getattr(args, "stdin", False):
+            prompt = sys.stdin.read()
+        result = prompt_router_mod.route_prompt(
+            conn,
+            workflow_id=getattr(args, "workflow_id", "") or "default",
+            worktree_path=getattr(args, "worktree_path", "") or "",
+            prompt=prompt,
+            mode=getattr(args, "mode", "") or "v6",
+            goal_id=getattr(args, "goal_id", "") or "",
+            work_item_id=getattr(args, "work_item_id", "") or "",
+        )
+        return _ok(result)
+    except ValueError as e:
+        return _err(str(e))
+    finally:
+        conn.close()
+
+
+def _handle_stage(args) -> int:
+    conn = _get_conn()
+    try:
+        if args.action == "graph":
+            return _ok(stage_machine_mod.graph())
+
+        elif args.action == "run-create":
+            payload = {}
+            if getattr(args, "input_json", ""):
+                payload = json.loads(args.input_json)
+            result = stage_runs_mod.create_stage_run(
+                conn,
+                workflow_id=args.workflow_id,
+                stage_id=args.stage_id,
+                goal_id=getattr(args, "goal_id", "") or "",
+                work_item_id=getattr(args, "work_item_id", "") or "",
+                parent_run_id=getattr(args, "parent_run_id", "") or "",
+                worktree_path=getattr(args, "worktree_path", "") or "",
+                input_payload=payload,
+            )
+            return _ok({"stage_run": result})
+
+        elif args.action == "run-get":
+            result = stage_runs_mod.get_stage_run(conn, args.stage_run_id)
+            return _ok({"found": result is not None, "stage_run": result})
+
+        elif args.action == "run-list":
+            rows = stage_runs_mod.list_stage_runs(
+                conn,
+                workflow_id=getattr(args, "workflow_id", "") or "",
+                status=getattr(args, "status_filter", "") or "",
+                limit=int(getattr(args, "limit", 50) or 50),
+            )
+            return _ok({"items": rows, "count": len(rows)})
+
+        elif args.action == "ticket-issue":
+            ticket = stage_runs_mod.issue_ticket(conn, stage_run_id=args.stage_run_id)
+            ticket["prompt_prefix"] = f"{stage_runs_mod.TICKET_PREFIX}{ticket['id']}"
+            return _ok({"ticket": ticket})
+
+        elif args.action == "ticket-claim":
+            ticket = stage_runs_mod.claim_ticket(
+                conn,
+                ticket_id=args.ticket_id,
+                subagent_type=getattr(args, "subagent_type", "") or "",
+                session_id=getattr(args, "session_id", "") or "",
+                agent_id=getattr(args, "agent_id", "") or "",
+            )
+            return _ok({"ticket": ticket})
+
+        elif args.action == "ticket-context":
+            ctx = stage_runs_mod.prompt_context_for_ticket(conn, args.ticket_id)
+            return _ok(ctx)
+
+        elif args.action == "ticket-parse":
+            prompt = getattr(args, "prompt", "") or ""
+            if getattr(args, "stdin", False):
+                prompt = sys.stdin.read()
+            return _ok(stage_runs_mod.ticket_parse_diagnostic(prompt))
+
+        elif args.action == "bootstrap":
+            import os as _os
+
+            worktree_path = getattr(args, "worktree_path", "") or _os.environ.get("CLAUDE_PROJECT_DIR", "") or _os.getcwd()
+            result = stage_runs_mod.bootstrap_planner(
+                conn,
+                workflow_id=getattr(args, "workflow_id", "") or "default",
+                worktree_path=worktree_path,
+                goal_id=getattr(args, "goal_id", "") or "",
+                work_item_id=getattr(args, "work_item_id", "") or "",
+                prompt=getattr(args, "prompt", "") or "",
+            )
+            return _ok(result)
+
+        elif args.action == "start-context":
+            prompt = getattr(args, "prompt", "") or ""
+            if getattr(args, "stdin", False):
+                prompt = sys.stdin.read()
+            ctx = stage_runs_mod.start_context_for_claimed_ticket(
+                conn,
+                subagent_type=getattr(args, "subagent_type", "") or "",
+                session_id=getattr(args, "session_id", "") or "",
+                agent_id=getattr(args, "agent_id", "") or "",
+                agent_ref=getattr(args, "agent_ref", "") or "",
+                claim_token=getattr(args, "claim_token", "") or "",
+                ticket_id=getattr(args, "ticket_id", "") or "",
+                workflow_id=getattr(args, "workflow_id", "") or "default",
+                worktree_path=getattr(args, "worktree_path", "") or "",
+                prompt=prompt,
+            )
+            return _ok({"found": ctx is not None, **(ctx or {})})
+
+        elif args.action == "launch-claim":
+            prompt = getattr(args, "prompt", "") or ""
+            if getattr(args, "stdin", False):
+                prompt = sys.stdin.read()
+            result = stage_runs_mod.claim_natural_agent_launch(
+                conn,
+                subagent_type=getattr(args, "subagent_type", "") or "",
+                workflow_id=getattr(args, "workflow_id", "") or "default",
+                worktree_path=getattr(args, "worktree_path", "") or "",
+                prompt=prompt,
+                session_id=getattr(args, "session_id", "") or "",
+                agent_id=getattr(args, "agent_id", "") or "",
+                launch_tool_id=getattr(args, "launch_tool_id", "") or "",
+                goal_id=getattr(args, "goal_id", "") or "",
+                work_item_id=getattr(args, "work_item_id", "") or "",
+            )
+            return _ok(result)
+
+        elif args.action == "result-submit":
+            if getattr(args, "raw_response", False):
+                response_text = sys.stdin.read()
+                result = stage_runs_mod.extract_and_submit_result(
+                    conn,
+                    stage_run_id=args.stage_run_id,
+                    response_text=response_text,
+                )
+            elif getattr(args, "payload", ""):
+                payload = json.loads(args.payload)
+                result = stage_runs_mod.submit_result(
+                    conn,
+                    stage_run_id=args.stage_run_id,
+                    payload=payload,
+                )
+            else:
+                raw = sys.stdin.read()
+                if not raw.strip():
+                    return _err("stage result-submit: --payload, --raw-response, or JSON stdin is required")
+                payload = json.loads(raw)
+                result = stage_runs_mod.submit_result(
+                    conn,
+                    stage_run_id=args.stage_run_id,
+                    payload=payload,
+                )
+            return _ok(result)
+
+        elif args.action == "result-extract-submit":
+            response_text = sys.stdin.read()
+            result = stage_runs_mod.extract_and_submit_response(conn, response_text=response_text)
+            return _ok(result)
+
+        elif args.action == "critic-worker":
+            providers = []
+            if getattr(args, "providers", ""):
+                providers = [p.strip() for p in args.providers.split(",") if p.strip()]
+            result = critic_worker_mod.run_once(
+                conn,
+                workflow_id=getattr(args, "workflow_id", "") or "",
+                providers=providers or None,
+                timeout=int(getattr(args, "timeout", 60) or 60),
+                limit=int(getattr(args, "limit", 10) or 10),
+                dry_run=bool(getattr(args, "dry_run", False)),
+                submit=not bool(getattr(args, "no_submit", False)),
+            )
+            return _ok(result)
+
+        elif args.action == "critic-run":
+            providers = []
+            if getattr(args, "providers", ""):
+                providers = [p.strip() for p in args.providers.split(",") if p.strip()]
+            result = critic_runner_mod.run_critic(
+                conn,
+                stage_run_id=args.stage_run_id,
+                providers=providers or None,
+                timeout=int(getattr(args, "timeout", 60) or 60),
+                subject=getattr(args, "subject", "") or "",
+                dry_run=bool(getattr(args, "dry_run", False)),
+            )
+            if bool(getattr(args, "submit", False)) and result.get("status") == "completed":
+                raw = (result.get("critic_run") or {}).get("raw_output") or ""
+                payload = stage_runs_mod.extract_result_block(raw)
+                if payload:
+                    result["submitted_result"] = stage_runs_mod.submit_result(
+                        conn,
+                        stage_run_id=args.stage_run_id,
+                        payload=payload,
+                    )
+                else:
+                    result["submit_error"] = "critic output did not contain claude_ctrl_result"
+            return _ok(result)
+
+        elif args.action == "critic-latest":
+            result = critic_runner_mod.latest_for_stage(conn, args.stage_run_id)
+            return _ok({"found": result is not None, "critic_run": result})
+
+        elif args.action == "landing-ready":
+            result = landing_readiness_mod.ensure_for_guardian_stage(conn, args.stage_run_id)
+            return _ok({"readiness": result})
+
+        elif args.action == "landing-get":
+            result = landing_readiness_mod.get(conn, args.stage_run_id)
+            return _ok({"found": result is not None, "readiness": result})
+
+        elif args.action == "landing-invalidate":
+            invalidated = landing_readiness_mod.invalidate_for_workflow(
+                conn,
+                getattr(args, "workflow_id", "") or "",
+                reason=getattr(args, "reason", "source_changed") or "source_changed",
+            )
+            return _ok({"workflow_id": getattr(args, "workflow_id", "") or "", "invalidated": invalidated})
+
+    except (ValueError, json.JSONDecodeError) as e:
+        return _err(str(e))
+    finally:
+        conn.close()
+    return _err(f"unknown stage action: {args.action}")
+
+
+def _handle_install(args) -> int:
+    try:
+        if args.action == "render-settings":
+            root = Path(getattr(args, "root", "") or _PROJECT_ROOT).resolve()
+            source = Path(getattr(args, "settings", "") or root / "settings.json")
+            output = Path(getattr(args, "output", "") or root / "tmp" / "claude-v6-settings.json")
+            settings_renderer_mod.render_settings(source, root, output)
+            return _ok({"output": str(output), "root": str(root)})
+    except Exception as e:
+        return _err(str(e))
+    return _err(f"unknown install action: {args.action}")
+
+
 def _handle_dispatch(args) -> int:
     conn = _get_conn()
     try:
-        if args.action == "process-stop":
-            # Read JSON from stdin: {"agent_type": "reviewer", "project_root": "/path"}
+        if args.action == "enqueue":
+            qid = dispatch_mod.enqueue(
+                conn,
+                role=args.role,
+                ticket=getattr(args, "ticket", None),
+            )
+            return _ok({"id": qid, "role": args.role})
+
+        elif args.action == "next":
+            workflow_id = getattr(args, "workflow_id", "") or ""
+            v6_next = stage_runs_mod.next_action(conn, workflow_id=workflow_id)
+            if v6_next is not None:
+                v6_next["found"] = True
+                v6_next["authority"] = "v6_stage_machine"
+                return _ok(v6_next)
+            return _ok({"found": False, "item": None, "authority": "v6_stage_machine"})
+
+        elif args.action == "ticket-issue":
+            ticket = stage_runs_mod.issue_ticket_for_next_action(conn, int(args.id))
+            return _ok({"ticket": ticket})
+
+        elif args.action == "pump-next":
+            return _ok(dispatch_pump_mod.next_launch(conn, workflow_id=getattr(args, "workflow_id", "") or ""))
+
+        elif args.action == "start":
+            dispatch_mod.start(conn, args.id)
+            return _ok({"id": args.id})
+
+        elif args.action == "complete":
+            dispatch_mod.complete(conn, args.id)
+            return _ok({"id": args.id})
+
+        elif args.action == "cycle-start":
+            cid = dispatch_mod.start_cycle(conn, args.initiative)
+            return _ok({"id": cid, "initiative": args.initiative})
+
+        elif args.action == "cycle-current":
+            result = dispatch_mod.current_cycle(conn)
+            if result is None:
+                return _ok({"found": False, "cycle": None})
+            result["found"] = True
+            return _ok(result)
+
+        elif args.action == "process-stop":
+            # Read JSON from stdin: {"agent_type": "tester", "project_root": "/path"}
             import json as _json
 
             raw = sys.stdin.read()
@@ -2465,8 +1117,9 @@ def _handle_dispatch(args) -> int:
                 {
                     "next_role": result["next_role"],
                     "workflow_id": result["workflow_id"],
-                    "next_dispatch_id": result.get("next_dispatch_id"),
                     "auto_dispatch": result.get("auto_dispatch", False),
+                    "codex_blocked": result.get("codex_blocked", False),
+                    "codex_reason": result.get("codex_reason", ""),
                     # W-GWT-1 (DEC-GUARD-WT-003, DEC-GUARD-WT-007): pass through
                     # worktree_path and guardian_mode so callers (post-task.sh,
                     # orchestrator) can read them from the structured result without
@@ -2474,24 +1127,6 @@ def _handle_dispatch(args) -> int:
                     # primary carrier to the orchestrator via additionalContext.
                     "worktree_path": result.get("worktree_path", ""),
                     "guardian_mode": result.get("guardian_mode", ""),
-                    "critic_found": result.get("critic_found", False),
-                    "critic_verdict": result.get("critic_verdict", ""),
-                    "critic_provider": result.get("critic_provider", ""),
-                    "critic_summary": result.get("critic_summary", ""),
-                    "critic_detail": result.get("critic_detail", ""),
-                    "critic_findings": result.get("critic_findings", []),
-                    "critic_execution_proof": result.get("critic_execution_proof", {}),
-                    "critic_execution_proof_valid": result.get(
-                        "critic_execution_proof_valid", False
-                    ),
-                    "critic_disabled": result.get("critic_disabled", False),
-                    "critic_try_again_streak": result.get("critic_try_again_streak", 0),
-                    "critic_retry_limit": result.get("critic_retry_limit", 0),
-                    "critic_repeated_fingerprint_streak": result.get(
-                        "critic_repeated_fingerprint_streak", 0
-                    ),
-                    "critic_escalated": result.get("critic_escalated", False),
-                    "critic_escalation_reason": result.get("critic_escalation_reason", ""),
                     "error": result["error"],
                     "hookSpecificOutput": hook_output,
                 }
@@ -2501,19 +1136,9 @@ def _handle_dispatch(args) -> int:
             # W-CONV-2: forward project_root and workflow_id so the marker is
             # scoped to this project. Both are optional — callers that do not
             # supply them get NULL columns and unscoped get_active() still works.
-            #
-            # A22 hardening (symmetric with A21 `marker set`): when
-            # --project-root is omitted, resolve through the canonical CLI
-            # resolver `_resolve_project_root(args)` (args → CLAUDE_PROJECT_DIR
-            # → git toplevel → normalize_path) so normal repo sessions no
-            # longer persist agent_markers.project_root = NULL via this
-            # dispatch path. If resolution still returns empty, preserve the
-            # legacy unscoped write (project_root=None) — matching A21.
             from runtime.core.policy_utils import normalize_path as _norm_path
 
             _pr = getattr(args, "project_root", None) or ""
-            if not _pr:
-                _pr = _resolve_project_root(args)
             _wf = getattr(args, "workflow_id", None) or ""
             lifecycle_mod.on_agent_start(
                 conn,
@@ -2528,391 +1153,9 @@ def _handle_dispatch(args) -> int:
             lifecycle_mod.on_agent_stop(conn, args.agent_type, args.agent_id)
             return _ok({"agent_id": args.agent_id, "agent_type": args.agent_type})
 
-        elif args.action == "agent-prompt":
-            # DEC-CLAUDEX-AGENT-PROMPT-001: runtime-owned Agent dispatch prompt producer.
-            # Resolves six contract fields from runtime state and returns a
-            # prompt_prefix containing the CLAUDEX_CONTRACT_BLOCK: line on line 1.
-            from runtime.core.agent_prompt import build_agent_dispatch_prompt as _build_ap
-
-            try:
-                result = _build_ap(
-                    conn,
-                    workflow_id=args.workflow_id,
-                    stage_id=args.stage_id,
-                    goal_id=getattr(args, "goal_id", None),
-                    work_item_id=getattr(args, "work_item_id", None),
-                    decision_scope=getattr(args, "decision_scope", "kernel"),
-                    generated_at=getattr(args, "generated_at", None),
-                )
-            except ValueError as exc:
-                return _err(f"dispatch agent-prompt: {exc}")
-            return _ok(result)
-
-        elif args.action == "attempt-issue":
-            # @decision DEC-CLAUDEX-HOOK-WIRING-001
-            # Title: attempt-issue CLI wires PreToolUse:Agent to dispatch_attempts.issue
-            # Status: accepted
-            # Rationale: pre-agent.sh calls this at PreToolUse:Agent time when a
-            #   CLAUDEX_CONTRACT_BLOCK is present.  dispatch_hook.record_agent_dispatch()
-            #   upserts agent_sessions + seats and issues a pending attempt in one call.
-            from runtime.core.dispatch_hook import record_agent_dispatch as _ra_dispatch
-
-            try:
-                result = _ra_dispatch(
-                    conn,
-                    args.session_id,
-                    args.agent_type,
-                    args.instruction or "",
-                    workflow_id=args.workflow_id or None,
-                    timeout_at=args.timeout_at or None,
-                )
-            except (ValueError, Exception) as exc:
-                return _err(f"dispatch attempt-issue: {exc}")
-            return _ok(result)
-
-        elif args.action == "attempt-claim":
-            # @decision DEC-CLAUDEX-HOOK-WIRING-001
-            # Title: attempt-claim CLI wires SubagentStart to dispatch_attempts.claim
-            # Status: accepted
-            # Rationale: subagent-start.sh calls this after consuming the carrier row.
-            #   dispatch_hook.record_subagent_delivery() finds the most recent pending
-            #   attempt for the seat and advances it to 'delivered'.  Returns
-            #   {"found": false} when no pending attempt exists (best-effort no-op).
-            from runtime.core.dispatch_hook import record_subagent_delivery as _ra_delivery
-
-            try:
-                result = _ra_delivery(
-                    conn,
-                    args.session_id,
-                    args.agent_type,
-                    attempt_id=args.attempt_id or "",
-                    child_agent_id=args.agent_id or "",
-                )
-            except (ValueError, Exception) as exc:
-                return _err(f"dispatch attempt-claim: {exc}")
-            if result is None:
-                return _ok({"found": False, "attempt": None})
-            return _ok({"found": True, "attempt": result})
-
-        elif args.action == "attempt-fail":
-            # SubagentStart compile failures are delivery failures, not runtime
-            # session blocks. Mark the exact carrier attempt failed and revoke any
-            # dispatch-time lease it carried; do not block the parent session.
-            from runtime.core import dispatch_attempts as _dispatch_attempts
-
-            try:
-                row = _dispatch_attempts.get(conn, args.attempt_id)
-                if row is None:
-                    return _ok({"action": "attempt-fail", "found": False, "attempt": None})
-                if row.get("status") not in {"pending", "delivered"}:
-                    return _ok(
-                        {
-                            "action": "attempt-fail",
-                            "found": True,
-                            "updated": False,
-                            "attempt": row,
-                        }
-                    )
-                result = _dispatch_attempts.fail(
-                    conn,
-                    args.attempt_id,
-                    reason=args.reason or "",
-                )
-                lease_id = str(row.get("lease_id") or "")
-                lease_revoked = False
-                if lease_id:
-                    lease_revoked = leases_mod.revoke(conn, lease_id)
-            except (ValueError, Exception) as exc:
-                return _err(f"dispatch attempt-fail: {exc}")
-            return _ok(
-                {
-                    "action": "attempt-fail",
-                    "found": True,
-                    "updated": True,
-                    "lease_revoked": lease_revoked,
-                    "attempt": result,
-                }
-            )
-
-        elif args.action == "sweep-dead":
-            # @decision DEC-DEAD-RECOVERY-001
-            from runtime.core import dead_recovery as _dr
-
-            kwargs: dict = {}
-            if getattr(args, "grace_seconds", None) is not None:
-                kwargs["grace_seconds"] = int(args.grace_seconds)
-            try:
-                result = _dr.sweep_all(conn, **kwargs)
-            except ValueError as exc:
-                return _err(f"dispatch sweep-dead: {exc}")
-            return _ok(result)
-
-        elif args.action == "seat-release":
-            # Runtime-owned seat teardown (DEC-SUPERVISION-THREADS-DOMAIN-001
-            # continuation).  Releases the seat and abandons every active
-            # supervision_thread touching it in one transaction per action.
-            from runtime.core.dispatch_hook import release_session_seat as _release
-
-            try:
-                result = _release(conn, args.session_id, args.agent_type)
-            except Exception as exc:
-                return _err(f"dispatch seat-release: {exc}")
-            return _ok(result)
-
-        elif args.action == "attempt-expire-stale":
-            # Sweep pending/delivered attempts whose timeout_at has elapsed.
-            # Intended for periodic runtime maintenance so timed-out attempts
-            # are cleaned up without a manual caller.
-            # Returns {"expired": N} — N=0 is normal when nothing is stale.
-            from runtime.core.dispatch_attempts import expire_stale as _expire_stale
-
-            try:
-                n = _expire_stale(
-                    conn,
-                    fallback_pending_max_age_seconds=(
-                        args.fallback_pending_max_age_seconds
-                        if getattr(args, "fallback_pending_max_age_seconds", 0) > 0
-                        else None
-                    ),
-                )
-            except Exception as exc:
-                return _err(f"dispatch attempt-expire-stale: {exc}")
-            return _ok({"expired": n})
-
     finally:
         conn.close()
     return _err(f"unknown dispatch action: {args.action}")
-
-
-def _handle_agent_session(args) -> int:
-    """Handler for `cc-policy agent-session` subcommands.
-
-    Thin adapter over ``runtime.core.agent_sessions``
-    (DEC-AGENT-SESSION-DOMAIN-001).  No agent_sessions state is read or
-    written outside of that domain module.  Session creation is
-    intentionally absent — sessions are bootstrapped exclusively
-    through ``dispatch_hook.ensure_session_and_seat``.
-    """
-    from runtime.core import agent_sessions as as_mod
-
-    conn = _get_conn()
-    try:
-        if args.action == "get":
-            try:
-                row = as_mod.get(conn, args.session_id)
-            except ValueError as exc:
-                return _err(f"agent-session get: {exc}")
-            return _ok({"session": row})
-
-        if args.action == "mark-completed":
-            try:
-                result = as_mod.mark_completed(conn, args.session_id)
-            except ValueError as exc:
-                return _err(f"agent-session mark-completed: {exc}")
-            return _ok(
-                {
-                    "session": result["row"],
-                    "transitioned": result["transitioned"],
-                }
-            )
-
-        if args.action == "mark-dead":
-            try:
-                result = as_mod.mark_dead(conn, args.session_id)
-            except ValueError as exc:
-                return _err(f"agent-session mark-dead: {exc}")
-            return _ok(
-                {
-                    "session": result["row"],
-                    "transitioned": result["transitioned"],
-                }
-            )
-
-        if args.action == "mark-orphaned":
-            try:
-                result = as_mod.mark_orphaned(conn, args.session_id)
-            except ValueError as exc:
-                return _err(f"agent-session mark-orphaned: {exc}")
-            return _ok(
-                {
-                    "session": result["row"],
-                    "transitioned": result["transitioned"],
-                }
-            )
-
-        if args.action == "list-active":
-            rows = as_mod.list_active(conn, workflow_id=args.workflow_id)
-            return _ok({"sessions": rows})
-
-    finally:
-        conn.close()
-    return _err(f"unknown agent-session action: {args.action}")
-
-
-def _handle_seat(args) -> int:
-    """Handler for `cc-policy seat` subcommands.
-
-    Thin adapter over ``runtime.core.seats`` (DEC-SEAT-DOMAIN-001).
-    No seat state is read or written outside of that domain module.
-    Seat creation is intentionally absent — seats are bootstrapped
-    exclusively through ``dispatch_hook.ensure_session_and_seat``.
-    """
-    from runtime.core import seats as seat_mod
-
-    conn = _get_conn()
-    try:
-        if args.action == "get":
-            try:
-                row = seat_mod.get(conn, args.seat_id)
-            except ValueError as exc:
-                return _err(f"seat get: {exc}")
-            return _ok({"seat": row})
-
-        if args.action == "release":
-            try:
-                result = seat_mod.release(conn, args.seat_id)
-            except ValueError as exc:
-                return _err(f"seat release: {exc}")
-            return _ok(
-                {"seat": result["row"], "transitioned": result["transitioned"]}
-            )
-
-        if args.action == "mark-dead":
-            try:
-                result = seat_mod.mark_dead(conn, args.seat_id)
-            except ValueError as exc:
-                return _err(f"seat mark-dead: {exc}")
-            return _ok(
-                {"seat": result["row"], "transitioned": result["transitioned"]}
-            )
-
-        if args.action == "list-for-session":
-            try:
-                rows = seat_mod.list_for_session(
-                    conn, args.session_id, status=args.status
-                )
-            except ValueError as exc:
-                return _err(f"seat list-for-session: {exc}")
-            return _ok({"seats": rows})
-
-        if args.action == "list-active":
-            rows = seat_mod.list_active(conn)
-            return _ok({"seats": rows})
-
-    finally:
-        conn.close()
-    return _err(f"unknown seat action: {args.action}")
-
-
-def _handle_supervision(args) -> int:
-    """Handler for `cc-policy supervision` subcommands.
-
-    Delegates every action to ``runtime.core.supervision_threads``
-    (DEC-SUPERVISION-THREADS-DOMAIN-001). No supervision-thread state is
-    read or written outside of that domain module.
-    """
-    from runtime.core import supervision_threads as sup_mod
-
-    conn = _get_conn()
-    try:
-        if args.action == "attach":
-            try:
-                row = sup_mod.attach(
-                    conn,
-                    args.supervisor_seat_id,
-                    args.worker_seat_id,
-                    args.thread_type,
-                )
-            except ValueError as exc:
-                return _err(f"supervision attach: {exc}")
-            return _ok({"thread": row})
-
-        if args.action == "detach":
-            try:
-                row = sup_mod.detach(conn, args.thread_id)
-            except ValueError as exc:
-                return _err(f"supervision detach: {exc}")
-            return _ok({"thread": row})
-
-        if args.action == "abandon":
-            try:
-                row = sup_mod.abandon(conn, args.thread_id)
-            except ValueError as exc:
-                return _err(f"supervision abandon: {exc}")
-            return _ok({"thread": row})
-
-        if args.action == "get":
-            try:
-                row = sup_mod.get(conn, args.thread_id)
-            except ValueError as exc:
-                return _err(f"supervision get: {exc}")
-            return _ok({"thread": row})
-
-        if args.action == "list-for-supervisor":
-            try:
-                rows = sup_mod.list_for_supervisor(
-                    conn,
-                    args.supervisor_seat_id,
-                    status=args.status,
-                )
-            except ValueError as exc:
-                return _err(f"supervision list-for-supervisor: {exc}")
-            return _ok({"threads": rows})
-
-        if args.action == "list-for-worker":
-            try:
-                rows = sup_mod.list_for_worker(
-                    conn,
-                    args.worker_seat_id,
-                    status=args.status,
-                )
-            except ValueError as exc:
-                return _err(f"supervision list-for-worker: {exc}")
-            return _ok({"threads": rows})
-
-        if args.action == "list-for-session":
-            try:
-                rows = sup_mod.list_for_session(
-                    conn,
-                    args.agent_session_id,
-                    status=args.status,
-                )
-            except ValueError as exc:
-                return _err(f"supervision list-for-session: {exc}")
-            return _ok({"threads": rows})
-
-        if args.action == "list-for-seat":
-            try:
-                rows = sup_mod.list_for_seat(
-                    conn,
-                    args.seat_id,
-                    status=args.status,
-                )
-            except ValueError as exc:
-                return _err(f"supervision list-for-seat: {exc}")
-            return _ok({"threads": rows})
-
-        if args.action == "abandon-for-seat":
-            try:
-                count = sup_mod.abandon_for_seat(conn, args.seat_id)
-            except ValueError as exc:
-                return _err(f"supervision abandon-for-seat: {exc}")
-            return _ok({"abandoned": count})
-
-        if args.action == "abandon-for-session":
-            try:
-                count = sup_mod.abandon_for_session(conn, args.agent_session_id)
-            except ValueError as exc:
-                return _err(f"supervision abandon-for-session: {exc}")
-            return _ok({"abandoned": count})
-
-        if args.action == "list-active":
-            rows = sup_mod.list_active(conn)
-            return _ok({"threads": rows})
-
-    finally:
-        conn.close()
-    return _err(f"unknown supervision action: {args.action}")
 
 
 def _handle_lifecycle(args) -> int:
@@ -2946,20 +1189,10 @@ def _handle_lifecycle(args) -> int:
 def _handle_statusline(args) -> int:
     conn = _get_conn()
     try:
-        if args.action == "snapshot":
-            snap = statusline_mod.snapshot(conn)
-            return _ok(snap)
-        if args.action == "hygiene":
-            from runtime.core.checkout_hygiene import classify_checkout_hygiene
-
-            result = classify_checkout_hygiene(
-                conn,
-                worktree_path=args.worktree_path,
-            )
-            return _ok(result)
+        snap = statusline_mod.snapshot(conn)
+        return _ok(snap)
     finally:
         conn.close()
-    return _err(f"unknown statusline action: {args.action}")
 
 
 def _handle_trace(args) -> int:
@@ -3010,62 +1243,7 @@ def _handle_trace(args) -> int:
 
 
 def _handle_workflow(args) -> int:
-    if args.action == "bootstrap-request":
-        try:
-            result = workflow_bootstrap_mod.request_local_workflow_bootstrap(
-                workflow_id=args.workflow_id,
-                desired_end_state=args.desired_end_state,
-                title=args.title,
-                goal_id=args.goal_id,
-                work_item_id=args.work_item_id,
-                worktree_path=getattr(args, "worktree_path", None),
-                base_branch=getattr(args, "base_branch", "main") or "main",
-                ticket=getattr(args, "ticket", None),
-                initiative=getattr(args, "initiative", None),
-                autonomy_budget=int(getattr(args, "autonomy_budget", 0) or 0),
-                decision_scope=getattr(args, "decision_scope", "kernel"),
-                generated_at=getattr(args, "generated_at", None),
-                requested_by=args.requested_by,
-                justification=args.justification,
-                ttl_seconds=int(
-                    getattr(
-                        args,
-                        "ttl_seconds",
-                        workflow_bootstrap_mod.DEFAULT_BOOTSTRAP_REQUEST_TTL_SECONDS,
-                    )
-                    or workflow_bootstrap_mod.DEFAULT_BOOTSTRAP_REQUEST_TTL_SECONDS
-                ),
-            )
-        except ValueError as e:
-            return _err(f"{args.action}: {e}")
-        return _ok(result)
-
-    if args.action in {"bootstrap-local", "bootstrap-planner"}:
-        try:
-            result = workflow_bootstrap_mod.bootstrap_local_workflow(
-                workflow_id=args.workflow_id,
-                bootstrap_token=args.bootstrap_token,
-                desired_end_state=args.desired_end_state,
-                title=args.title,
-                goal_id=args.goal_id,
-                work_item_id=args.work_item_id,
-                worktree_path=getattr(args, "worktree_path", None),
-                base_branch=getattr(args, "base_branch", None),
-                ticket=getattr(args, "ticket", None),
-                initiative=getattr(args, "initiative", None),
-                autonomy_budget=getattr(args, "autonomy_budget", None),
-                decision_scope=getattr(args, "decision_scope", None),
-                generated_at=getattr(args, "generated_at", None),
-            )
-        except ValueError as e:
-            return _err(f"{args.action}: {e}")
-        return _ok(result)
-
-    workflow_db_root = None
-    if args.action in {"stage-packet", "get"}:
-        workflow_db_root = getattr(args, "worktree_path", None) or None
-
-    conn = _get_conn(project_root=workflow_db_root)
+    conn = _get_conn()
     try:
         if args.action == "bind":
             workflows_mod.bind_workflow(
@@ -3112,167 +1290,6 @@ def _handle_workflow(args) -> int:
             )
             return _ok({"workflow_id": args.workflow_id, "action": "scope-set"})
 
-        elif args.action == "scope-sync":
-            # @decision DEC-CLAUDEX-SCOPE-TRIAD-UNIFIED-WRITE-AUTHORITY-001
-            # Title: scope-sync atomically writes workflow_scope + work_items.scope_json
-            #   from a single scope file, eliminating the dual-write-path drift that
-            #   causes _validate_work_item_scope_matches_authority to fire.
-            # Status: accepted
-            # Rationale: Prior to this verb, workflow_scope and work_items.scope_json were
-            #   written by two independent CLI paths (scope-set and work-item-set) with no
-            #   transactional bridge. Any orchestrator that refreshed workflow_scope without
-            #   mirroring the same triad into work_items.scope_json would produce a
-            #   prompt-pack compile failure from the guard in prompt_pack_resolver.py.
-            #   This verb reads the scope file once, validates its shape, checks the
-            #   work_item_id exists, then executes BOTH SQL writes inside a single
-            #   SQLite transaction — so either both commit or both roll back.
-            #   The legacy scope-set and work-item-set primitives remain intact as
-            #   lower-level escape hatches; scope-sync is the blessed orchestrator path.
-            import json as _json
-            import time as _time
-
-            scope_file_path = getattr(args, "scope_file", None)
-            work_item_id = getattr(args, "work_item_id", None)
-
-            # Step 1: Parse and validate scope file (before any write).
-            try:
-                with open(scope_file_path, "r", encoding="utf-8") as _fh:
-                    raw_text = _fh.read()
-                scope_data = _json.loads(raw_text)
-            except (OSError, IOError) as e:
-                return _err(f"scope-sync: cannot read scope file '{scope_file_path}': {e}")
-            except _json.JSONDecodeError as e:
-                return _err(f"scope-sync: scope file is not valid JSON: {e}")
-
-            if not isinstance(scope_data, dict):
-                return _err(
-                    f"scope-sync: scope file must be a JSON object (dict), "
-                    f"got {type(scope_data).__name__}"
-                )
-
-            # Validate key set — only these keys are legal (mirrors _SCOPE_KEYS +
-            # authority_domains alias; unknown keys are an error so the caller
-            # cannot silently pass a stale full-manifest slice file).
-            _LEGAL_SCOPE_FILE_KEYS = frozenset({
-                "allowed_paths",
-                "required_paths",
-                "forbidden_paths",
-                "state_domains",
-                "authority_domains",  # alias for state_domains / authority_domains column
-            })
-            unknown_keys = set(scope_data.keys()) - _LEGAL_SCOPE_FILE_KEYS
-            if unknown_keys:
-                return _err(
-                    f"scope-sync: scope file contains unknown key(s): "
-                    f"{sorted(unknown_keys)}. "
-                    f"Legal keys are: {sorted(_LEGAL_SCOPE_FILE_KEYS)}. "
-                    f"Did you accidentally pass the full slice manifest instead of "
-                    f"a narrow scope-triad file?"
-                )
-
-            # Validate that path values are lists of strings.
-            _PATH_KEYS = ("allowed_paths", "required_paths", "forbidden_paths")
-            for _pk in _PATH_KEYS:
-                _val = scope_data.get(_pk, [])
-                if not isinstance(_val, list):
-                    return _err(
-                        f"scope-sync: '{_pk}' must be a JSON array of strings, "
-                        f"got {type(_val).__name__}"
-                    )
-                for _item in _val:
-                    if not isinstance(_item, str):
-                        return _err(
-                            f"scope-sync: '{_pk}' must be a JSON array of strings; "
-                            f"found non-string element {_item!r}"
-                        )
-
-            # Validate auxiliary domain lists.
-            for _dk in ("state_domains", "authority_domains"):
-                _val = scope_data.get(_dk, [])
-                if not isinstance(_val, list):
-                    return _err(
-                        f"scope-sync: '{_dk}' must be a JSON array of strings, "
-                        f"got {type(_val).__name__}"
-                    )
-
-            allowed_paths = scope_data.get("allowed_paths", [])
-            required_paths = scope_data.get("required_paths", [])
-            forbidden_paths = scope_data.get("forbidden_paths", [])
-            # authority_domains on the workflow_scope row uses the name from
-            # workflows.set_scope; scope file may use either name.
-            authority_domains = scope_data.get("authority_domains") or scope_data.get("state_domains") or []
-
-            # Serialize scope_json for work_items using the canonical key names
-            # (_SCOPE_KEYS: allowed_paths, required_paths, forbidden_paths, state_domains).
-            # state_domains carries whichever domain list the file provided.
-            state_domains = scope_data.get("state_domains") or scope_data.get("authority_domains") or []
-            scope_json_payload = {
-                "allowed_paths": allowed_paths,
-                "required_paths": required_paths,
-                "forbidden_paths": forbidden_paths,
-                "state_domains": state_domains,
-            }
-            scope_json_str = _json.dumps(scope_json_payload)
-
-            # Step 2: Validate workflow binding exists (guard replicates set_scope check).
-            if workflows_mod.get_binding(conn, args.workflow_id) is None:
-                return _err(
-                    f"scope-sync: workflow_id '{args.workflow_id}' not found in "
-                    f"workflow_bindings. Run 'cc-policy workflow bind' first."
-                )
-
-            # Step 3: Validate work_item_id exists (must happen before any write).
-            import runtime.core.decision_work_registry as _dwr
-
-            existing_wi = _dwr.get_work_item(conn, work_item_id)
-            if existing_wi is None:
-                return _err(
-                    f"scope-sync: work_item_id '{work_item_id}' not found in "
-                    f"work_items table. Seed it first via 'cc-policy workflow work-item-set'. "
-                    f"No writes performed (atomic rollback)."
-                )
-
-            # Step 4: Both writes in a single SQLite transaction.
-            # We bypass workflows_mod.set_scope (which has its own with conn:) and
-            # _dwr.update_work_item_scope_json (same) to ensure TRUE atomicity —
-            # both SQL statements commit or neither does.
-            now = int(_time.time())
-            with conn:
-                conn.execute(
-                    """
-                    INSERT INTO workflow_scope
-                        (workflow_id, allowed_paths, required_paths, forbidden_paths,
-                         authority_domains, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(workflow_id) DO UPDATE SET
-                        allowed_paths     = excluded.allowed_paths,
-                        required_paths    = excluded.required_paths,
-                        forbidden_paths   = excluded.forbidden_paths,
-                        authority_domains = excluded.authority_domains,
-                        updated_at        = excluded.updated_at
-                    """,
-                    (
-                        args.workflow_id,
-                        _json.dumps(allowed_paths),
-                        _json.dumps(required_paths),
-                        _json.dumps(forbidden_paths),
-                        _json.dumps(authority_domains),
-                        now,
-                    ),
-                )
-                conn.execute(
-                    "UPDATE work_items SET scope_json = ?, updated_at = ? WHERE work_item_id = ?",
-                    (scope_json_str, now, work_item_id),
-                )
-
-            return _ok({
-                "workflow_id": args.workflow_id,
-                "work_item_id": work_item_id,
-                "action": "scope-sync",
-                "paths_written": 3,
-                "status": "ok",
-            })
-
         elif args.action == "scope-get":
             result = workflows_mod.get_scope(conn, args.workflow_id)
             if result is None:
@@ -3290,289 +1307,9 @@ def _handle_workflow(args) -> int:
             result = workflows_mod.check_scope_compliance(conn, args.workflow_id, changed)
             return _ok(result)
 
-        elif args.action == "stage-packet":
-            from runtime.core.stage_packet import build_stage_packet as _build_stage_packet
-
-            try:
-                result = _build_stage_packet(
-                    conn,
-                    workflow_id=getattr(args, "workflow_id", None),
-                    stage_id=args.stage_id,
-                    goal_id=getattr(args, "goal_id", None),
-                    work_item_id=getattr(args, "work_item_id", None),
-                    worktree_path=getattr(args, "worktree_path", None),
-                    decision_scope=getattr(args, "decision_scope", "kernel"),
-                    generated_at=getattr(args, "generated_at", None),
-                )
-            except ValueError as e:
-                return _err(f"stage-packet: {e}")
-            return _ok(result)
-
         elif args.action == "list":
             rows = workflows_mod.list_bindings(conn)
             return _ok({"items": rows, "count": len(rows)})
-
-        elif args.action == "unbind":
-            removed = workflows_mod.unbind_workflow(conn, args.workflow_id)
-            return _ok(
-                {
-                    "workflow_id": args.workflow_id,
-                    "action": "unbind",
-                    "removed": removed,
-                    "found": removed,
-                }
-            )
-
-        elif args.action == "scope-unset":
-            removed = workflows_mod.unset_scope(conn, args.workflow_id)
-            return _ok(
-                {
-                    "workflow_id": args.workflow_id,
-                    "action": "scope-unset",
-                    "removed": removed,
-                    "found": removed,
-                }
-            )
-
-        elif args.action == "goal-set":
-            # Canonical workflow-scoped goal upsert.
-            # Refuses unbound workflow_id so callers cannot seed goals under
-            # workflows that have no worktree/branch binding — the binding
-            # is the authority that proves the workflow exists.
-            # (DEC-CLAUDEX-DW-WORKFLOW-JOIN-001)
-            if workflows_mod.get_binding(conn, args.workflow_id) is None:
-                return _err(
-                    f"workflow_id '{args.workflow_id}' is not bound; "
-                    f"run `cc-policy workflow bind` first. Refusing to "
-                    f"seed a goal under an unbound workflow — this is the "
-                    f"authority check introduced by "
-                    f"DEC-CLAUDEX-DW-WORKFLOW-JOIN-001."
-                )
-            import runtime.core.decision_work_registry as _dwr
-
-            # Cross-workflow ownership guard on the goal authority.
-            # Symmetric with the work-item-set check: upsert must not
-            # reassign an existing goal_id from workflow A to workflow B.
-            # Legal upserts — same-workflow overwrite and legacy
-            # NULL-workflow adoption — are preserved.
-            # (DEC-CLAUDEX-DW-WORKFLOW-JOIN-001)
-            existing = _dwr.get_goal(conn, args.goal_id)
-            if (
-                existing is not None
-                and existing.workflow_id is not None
-                and existing.workflow_id != args.workflow_id
-            ):
-                return _err(
-                    f"goal_id '{args.goal_id}' is already scoped to "
-                    f"workflow '{existing.workflow_id}'; refusing to "
-                    f"reassign it to '{args.workflow_id}'. Cross-workflow "
-                    f"goal reassignment would re-open the contract bleed "
-                    f"closed by DEC-CLAUDEX-DW-WORKFLOW-JOIN-001. Choose a "
-                    f"distinct goal_id for the new workflow, or retire the "
-                    f"existing goal first."
-                )
-
-            record = _dwr.GoalRecord(
-                goal_id=args.goal_id,
-                desired_end_state=args.desired_end_state,
-                status=args.status,
-                autonomy_budget=int(args.autonomy_budget),
-                continuation_rules_json=getattr(args, "continuation_rules_json", "[]") or "[]",
-                stop_conditions_json=getattr(args, "stop_conditions_json", "[]") or "[]",
-                escalation_boundaries_json=getattr(args, "escalation_boundaries_json", "[]") or "[]",
-                user_decision_boundaries_json=getattr(args, "user_decision_boundaries_json", "[]") or "[]",
-                workflow_id=args.workflow_id,
-            )
-            stored = _dwr.upsert_goal(conn, record)
-            return _ok(
-                {
-                    "action": "goal-set",
-                    "workflow_id": args.workflow_id,
-                    "goal_id": stored.goal_id,
-                    "goal_status": stored.status,
-                    "created_at": stored.created_at,
-                    "updated_at": stored.updated_at,
-                }
-            )
-
-        elif args.action == "work-item-set":
-            # Canonical workflow-scoped work-item upsert.
-            # Two authority checks:
-            #   1) workflow_id must be bound (same rule as goal-set).
-            #   2) goal_id must already exist AND carry the same workflow_id
-            #      — otherwise the caller is attaching a work_item to a goal
-            #      that belongs to a different workflow, which would re-open
-            #      the cross-workflow bleed DEC-CLAUDEX-DW-WORKFLOW-JOIN-001
-            #      closed.
-            if workflows_mod.get_binding(conn, args.workflow_id) is None:
-                return _err(
-                    f"workflow_id '{args.workflow_id}' is not bound; "
-                    f"run `cc-policy workflow bind` first. Refusing to "
-                    f"seed a work_item under an unbound workflow."
-                )
-            import runtime.core.decision_work_registry as _dwr
-
-            goal = _dwr.get_goal(conn, args.goal_id)
-            if goal is None:
-                return _err(
-                    f"goal_id '{args.goal_id}' not found; create the goal "
-                    f"first with `cc-policy workflow goal-set`."
-                )
-            if goal.workflow_id != args.workflow_id:
-                return _err(
-                    f"goal_id '{args.goal_id}' is scoped to workflow "
-                    f"'{goal.workflow_id}', not '{args.workflow_id}'. "
-                    f"Refusing to attach a work_item across workflow "
-                    f"boundaries (DEC-CLAUDEX-DW-WORKFLOW-JOIN-001)."
-                )
-            existing = _dwr.get_work_item(conn, args.work_item_id)
-            scope_json_arg = getattr(args, "scope_json", None)
-            evaluation_json_arg = getattr(args, "evaluation_json", None)
-            scope_json = (
-                scope_json_arg
-                if scope_json_arg is not None and str(scope_json_arg).strip()
-                else (existing.scope_json if existing is not None else "{}")
-            )
-            evaluation_json = (
-                evaluation_json_arg
-                if evaluation_json_arg is not None and str(evaluation_json_arg).strip()
-                else (existing.evaluation_json if existing is not None else "{}")
-            )
-            record = _dwr.WorkItemRecord(
-                work_item_id=args.work_item_id,
-                goal_id=args.goal_id,
-                title=args.title,
-                status=args.status,
-                version=int(getattr(args, "version", 1) or 1),
-                author=getattr(args, "author", "planner") or "planner",
-                scope_json=scope_json or "{}",
-                evaluation_json=evaluation_json or "{}",
-                head_sha=getattr(args, "head_sha", None) or None,
-                reviewer_round=int(getattr(args, "reviewer_round", 0) or 0),
-                workflow_id=args.workflow_id,
-            )
-            stored = _dwr.upsert_work_item(conn, record)
-            from runtime.core import work_item_grants as _wig
-
-            grant = _wig.ensure_default(
-                conn,
-                workflow_id=args.workflow_id,
-                work_item_id=stored.work_item_id,
-                granted_by=getattr(args, "author", "planner") or "planner",
-            )
-            return _ok(
-                {
-                    "action": "work-item-set",
-                    "workflow_id": args.workflow_id,
-                    "goal_id": stored.goal_id,
-                    "work_item_id": stored.work_item_id,
-                    "work_item_status": stored.status,
-                    "landing_grant": grant.as_dict(),
-                    "created_at": stored.created_at,
-                    "updated_at": stored.updated_at,
-                }
-            )
-
-        elif args.action == "goal-get":
-            import runtime.core.decision_work_registry as _dwr
-
-            goal = _dwr.get_goal(conn, args.goal_id)
-            if goal is None:
-                return _err(f"goal_id '{args.goal_id}' not found")
-            return _ok(
-                {
-                    "goal_id": goal.goal_id,
-                    "desired_end_state": goal.desired_end_state,
-                    "status": goal.status,
-                    "autonomy_budget": goal.autonomy_budget,
-                    "workflow_id": goal.workflow_id,
-                    "created_at": goal.created_at,
-                    "updated_at": goal.updated_at,
-                    "found": True,
-                }
-            )
-
-        elif args.action == "work-item-get":
-            import runtime.core.decision_work_registry as _dwr
-            from runtime.core import work_item_grants as _wig
-
-            wi = _dwr.get_work_item(conn, args.work_item_id)
-            if wi is None:
-                return _err(f"work_item_id '{args.work_item_id}' not found")
-            landing_grant = None
-            if wi.workflow_id:
-                landing_grant = _wig.effective(
-                    conn,
-                    workflow_id=wi.workflow_id,
-                    work_item_id=wi.work_item_id,
-                ).as_dict()
-            return _ok(
-                {
-                    "work_item_id": wi.work_item_id,
-                    "goal_id": wi.goal_id,
-                    "title": wi.title,
-                    "status": wi.status,
-                    "version": wi.version,
-                    "author": wi.author,
-                    "scope_json": wi.scope_json,
-                    "evaluation_json": wi.evaluation_json,
-                    "head_sha": wi.head_sha,
-                    "reviewer_round": wi.reviewer_round,
-                    "workflow_id": wi.workflow_id,
-                    "landing_grant": landing_grant,
-                    "created_at": wi.created_at,
-                    "updated_at": wi.updated_at,
-                    "found": True,
-                }
-            )
-
-        elif args.action == "work-item-grant-get":
-            import runtime.core.decision_work_registry as _dwr
-            from runtime.core import work_item_grants as _wig
-
-            wi = _dwr.get_work_item(conn, args.work_item_id)
-            if wi is None:
-                return _err(f"work_item_id '{args.work_item_id}' not found")
-            if not wi.workflow_id:
-                return _err(
-                    f"work_item_id '{args.work_item_id}' has no workflow_id; "
-                    "cannot resolve a work-item grant"
-                )
-            grant = _wig.effective(
-                conn,
-                workflow_id=wi.workflow_id,
-                work_item_id=wi.work_item_id,
-            )
-            return _ok({"landing_grant": grant.as_dict(), "found": True})
-
-        elif args.action == "work-item-grant-set":
-            import runtime.core.decision_work_registry as _dwr
-            from runtime.core import work_item_grants as _wig
-
-            wi = _dwr.get_work_item(conn, args.work_item_id)
-            if wi is None:
-                return _err(f"work_item_id '{args.work_item_id}' not found")
-            if wi.workflow_id != args.workflow_id:
-                return _err(
-                    f"work_item_id '{args.work_item_id}' is scoped to workflow "
-                    f"'{wi.workflow_id}', not '{args.workflow_id}'"
-                )
-            required_ops = (
-                tuple(getattr(args, "requires_user_approval", None) or [])
-                or _wig.DEFAULT_REQUIRES_USER_APPROVAL
-            )
-            grant = _wig.WorkItemGrant(
-                workflow_id=args.workflow_id,
-                work_item_id=args.work_item_id,
-                can_commit_branch=not getattr(args, "no_commit_branch", False),
-                can_request_review=not getattr(args, "no_request_review", False),
-                can_autoland=not getattr(args, "no_autoland", False),
-                merge_strategy=args.merge_strategy,
-                requires_user_approval=required_ops,
-                granted_by=getattr(args, "granted_by", "planner") or "planner",
-            )
-            stored = _wig.upsert(conn, grant)
-            return _ok({"landing_grant": stored.as_dict(), "found": True})
 
     except ValueError as e:
         return _err(str(e))
@@ -3726,18 +1463,10 @@ def _handle_lease(args) -> int:
             return _ok({"revoked": revoked})
 
         elif args.action == "expire-stale":
-            expired_count = leases_mod.expire_stale(conn)
-            revoked_missing_worktree_count = leases_mod.revoke_missing_worktrees(conn)
-            return _ok(
-                {
-                    "expired_count": expired_count,
-                    "revoked_missing_worktree_count": revoked_missing_worktree_count,
-                    "total_count": expired_count + revoked_missing_worktree_count,
-                }
-            )
+            count = leases_mod.expire_stale(conn)
+            return _ok({"expired_count": count})
 
         elif args.action == "summary":
-            leases_mod.revoke_missing_worktrees(conn)
             result = leases_mod.summary(
                 conn,
                 worktree_path=getattr(args, "worktree_path", None),
@@ -3819,209 +1548,6 @@ def _handle_completion(args) -> int:
     return _err(f"unknown completion action: {args.action}")
 
 
-def _handle_critic_review(args) -> int:
-    """Handle all ``cc-policy critic-review`` subcommands."""
-    import json as _json
-
-    conn = _get_conn()
-    try:
-        if args.action == "submit":
-            metadata = {}
-            if getattr(args, "metadata", None):
-                try:
-                    metadata = _json.loads(args.metadata)
-                except _json.JSONDecodeError as e:
-                    return _err(f"invalid JSON metadata: {e}")
-            result = critic_reviews_mod.submit(
-                conn,
-                workflow_id=args.workflow_id,
-                lease_id=getattr(args, "lease_id", "") or "",
-                role=getattr(args, "role", critic_reviews_mod.IMPLEMENTER_ROLE),
-                provider=getattr(args, "provider", "codex") or "codex",
-                verdict=args.verdict,
-                summary=getattr(args, "summary", "") or "",
-                detail=getattr(args, "detail", "") or "",
-                fingerprint=getattr(args, "fingerprint", "") or "",
-                metadata=metadata,
-                project_root=getattr(args, "project_root", "") or "",
-            )
-            return _ok(result)
-
-        elif args.action == "latest":
-            record = critic_reviews_mod.latest(
-                conn,
-                workflow_id=getattr(args, "workflow_id", None),
-                lease_id=getattr(args, "lease_id", None),
-                role=getattr(args, "role", critic_reviews_mod.IMPLEMENTER_ROLE),
-            )
-            if record is None:
-                return _ok({"found": False})
-            resolution = critic_reviews_mod.assess_latest(
-                conn,
-                workflow_id=record.get("workflow_id", ""),
-                role=record.get("role", critic_reviews_mod.IMPLEMENTER_ROLE),
-            )
-            record["resolution"] = resolution.as_dict()
-            return _ok(record)
-
-        elif args.action == "list":
-            rows = critic_reviews_mod.list_reviews(
-                conn,
-                workflow_id=getattr(args, "workflow_id", None),
-                lease_id=getattr(args, "lease_id", None),
-                role=getattr(args, "role", None),
-                limit=getattr(args, "limit", None),
-            )
-            return _ok({"items": rows, "count": len(rows)})
-
-    except ValueError as e:
-        return _err(str(e))
-    finally:
-        conn.close()
-    return _err(f"unknown critic-review action: {args.action}")
-
-
-def _handle_critic_run(args) -> int:
-    """Handle ``cc-policy critic-run`` telemetry subcommands."""
-    import json as _json
-
-    import runtime.core.critic_runs as critic_runs_mod
-
-    conn = _get_conn()
-    try:
-        if args.action == "start":
-            result = critic_runs_mod.start(
-                conn,
-                workflow_id=args.workflow_id,
-                lease_id=getattr(args, "lease_id", "") or "",
-                role=getattr(args, "role", critic_runs_mod.IMPLEMENTER_ROLE),
-                provider=getattr(args, "provider", "codex") or "codex",
-                run_id=getattr(args, "run_id", "") or "",
-                status=getattr(args, "run_status", "started") or "started",
-            )
-            return _ok(result)
-
-        if args.action == "progress":
-            result = critic_runs_mod.progress(
-                conn,
-                run_id=args.run_id,
-                message=args.message,
-                phase=getattr(args, "phase", "") or "",
-                status=getattr(args, "run_status", "") or "",
-            )
-            return _ok(result)
-
-        if args.action == "complete":
-            metrics = {}
-            if getattr(args, "metrics", None):
-                try:
-                    metrics = _json.loads(args.metrics)
-                except _json.JSONDecodeError as e:
-                    return _err(f"invalid JSON metrics: {e}")
-            result = critic_runs_mod.complete(
-                conn,
-                run_id=args.run_id,
-                verdict=args.verdict,
-                provider=getattr(args, "provider", "") or "",
-                summary=getattr(args, "summary", "") or "",
-                detail=getattr(args, "detail", "") or "",
-                artifact_path=getattr(args, "artifact_path", "") or "",
-                fingerprint=getattr(args, "fingerprint", "") or "",
-                review_id=getattr(args, "review_id", None),
-                fallback=getattr(args, "fallback", "") or "",
-                error=getattr(args, "error", "") or "",
-                metrics=metrics,
-            )
-            return _ok(result)
-
-        if args.action == "fallback-complete":
-            result = critic_runs_mod.mark_fallback_completed(
-                conn,
-                workflow_id=args.workflow_id,
-                fallback=getattr(args, "fallback", "") or "reviewer",
-                summary=getattr(args, "summary", "") or "",
-            )
-            return _ok({"found": result is not None, "run": result})
-
-        if args.action == "latest":
-            result = critic_runs_mod.latest(
-                conn,
-                workflow_id=getattr(args, "workflow_id", None),
-                role=getattr(args, "role", critic_runs_mod.IMPLEMENTER_ROLE),
-            )
-            if result is None:
-                return _ok({"found": False})
-            result["found"] = True
-            return _ok(result)
-
-        if args.action == "list":
-            rows = critic_runs_mod.list_runs(
-                conn,
-                workflow_id=getattr(args, "workflow_id", None),
-                role=getattr(args, "role", None),
-                status=getattr(args, "run_status", None),
-                limit=getattr(args, "limit", None),
-            )
-            return _ok({"items": rows, "count": len(rows)})
-
-        if args.action == "metrics":
-            result = critic_runs_mod.metrics(
-                conn,
-                workflow_id=getattr(args, "workflow_id", None),
-                role=getattr(args, "role", critic_runs_mod.IMPLEMENTER_ROLE),
-            )
-            return _ok(result.as_dict())
-
-    except ValueError as e:
-        return _err(str(e))
-    finally:
-        conn.close()
-    return _err(f"unknown critic-run action: {args.action}")
-
-
-# ---------------------------------------------------------------------------
-# Critic top-level handler (DEC-CRITIC-CONTEXT-001)
-# ---------------------------------------------------------------------------
-
-
-def _handle_critic(args) -> int:
-    """Handle ``cc-policy critic`` subcommands.
-
-    Subcommands:
-      context resolve --hook-input <json>   Resolve implementer workflow_id +
-          lease_id from a SubagentStop hook input JSON.  This is the single
-          authority called by implementer-critic.sh and implementer-critic-hook.mjs
-          (DEC-CRITIC-CONTEXT-001).
-
-    Returns JSON with:
-      found          bool   -- True when an implementer lease was resolved.
-      workflow_id    str    -- resolved workflow_id.
-      lease_id       str    -- resolved lease_id (empty when not found).
-      worktree_path  str    -- resolved worktree_path from the lease.
-      agent_id       str    -- agent_id from the hook input.
-      resolve_path   str    -- "agent_id" | "cwd" | "fallback" | "not_found".
-      error          str    -- human-readable failure reason when not found.
-    """
-    import runtime.core.critic_context as critic_context_mod
-
-    conn = _get_conn()
-    try:
-        if getattr(args, "subcommand", None) == "context":
-            if getattr(args, "action", None) == "resolve":
-                hook_input_raw = getattr(args, "hook_input", "") or ""
-                fallback_path = getattr(args, "fallback_worktree_path", "") or ""
-                result = critic_context_mod.resolve_from_json_string(
-                    conn,
-                    hook_input_raw,
-                    fallback_worktree_path=fallback_path,
-                )
-                return _ok(result)
-            return _err(f"unknown critic context action: {getattr(args, 'action', '')!r}")
-        return _err(f"unknown critic subcommand: {getattr(args, 'subcommand', '')!r}")
-    finally:
-        conn.close()
-
-
 # ---------------------------------------------------------------------------
 # Bug pipeline handler
 # ---------------------------------------------------------------------------
@@ -4092,96 +1618,6 @@ def _handle_bug(args) -> int:
     finally:
         conn.close()
     return _err(f"unknown bug action: {args.action}")
-
-
-# ---------------------------------------------------------------------------
-# Issue capture handler
-# ---------------------------------------------------------------------------
-
-
-def _handle_issue(args) -> int:
-    """Handle all ``cc-policy issue`` subcommands."""
-    import json as _json
-
-    import runtime.core.issue_capture as issue_capture_mod
-
-    conn = None
-    try:
-        if args.action == "qualify":
-            payload = _payload_from_args(args, _json)
-            disposition = issue_capture_mod.qualify(
-                item_kind=payload.get("item_kind", payload.get("kind", "task")),
-                title=payload.get("title", ""),
-                evidence=payload.get("evidence", ""),
-                fixed_now=bool(payload.get("fixed_now", False)),
-            )
-            return _ok({"disposition": disposition})
-
-        if args.action == "file":
-            payload = _payload_from_args(args, _json)
-            project_root = payload.get("project_root", getattr(args, "project_root", "") or "")
-            conn = _get_conn(project_root=project_root or None)
-            result = issue_capture_mod.file_issue(
-                conn,
-                item_kind=payload.get("item_kind", payload.get("kind", "task")),
-                title=payload.get("title", ""),
-                body=payload.get("body", ""),
-                scope=payload.get("scope", "auto"),
-                repo=payload.get("repo", ""),
-                source_component=payload.get("source_component", ""),
-                file_path=payload.get("file_path", ""),
-                evidence=payload.get("evidence", ""),
-                project_root=project_root,
-                fixed_now=bool(payload.get("fixed_now", False)),
-            )
-            return _ok(result)
-
-        if args.action == "list":
-            conn = _get_conn(project_root=getattr(args, "project_root", None) or None)
-            rows = issue_capture_mod.list_issues(
-                conn,
-                disposition=getattr(args, "disposition", None) or None,
-                item_kind=getattr(args, "item_kind", None) or None,
-                limit=int(getattr(args, "limit", 50) or 50),
-            )
-            return _ok({"items": rows, "count": len(rows)})
-
-        if args.action == "retry-failed":
-            conn = _get_conn(project_root=getattr(args, "project_root", None) or None)
-            results = issue_capture_mod.retry_failed(conn)
-            return _ok({"items": results, "count": len(results)})
-
-    except Exception as e:
-        return _err(f"issue command error: {e}")
-    finally:
-        if conn is not None:
-            conn.close()
-    return _err(f"unknown issue action: {args.action}")
-
-
-def _payload_from_args(args, json_module) -> dict:
-    payload: dict = {}
-    json_payload = getattr(args, "json_payload", None)
-    if json_payload:
-        try:
-            payload.update(json_module.loads(json_payload))
-        except json_module.JSONDecodeError as e:
-            raise ValueError(f"invalid JSON payload: {e}") from e
-    for attr in (
-        "item_kind",
-        "title",
-        "body",
-        "scope",
-        "repo",
-        "source_component",
-        "file_path",
-        "evidence",
-        "project_root",
-    ):
-        value = getattr(args, attr, None)
-        if value not in (None, ""):
-            payload[attr] = value
-    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -4294,8 +1730,7 @@ def _handle_evaluate(args) -> int:
     Input JSON (from stdin):
       {"event_type": "PreToolUse", "tool_name": "Write",
        "tool_input": {...}, "cwd": "/project",
-       "actor_role": "implementer", "actor_id": "agent-123",
-       "actor_workflow_id": "workflow-123"}
+       "actor_role": "implementer", "actor_id": "agent-123"}
 
     Output JSON:
       {"status": "ok", "action": "allow"|"deny"|"feedback",
@@ -4309,8 +1744,11 @@ def _handle_evaluate(args) -> int:
       feedback → {"additionalContext": "<reason>"}
     """
     import json as _json
+    import os as _os
+    import subprocess as _subprocess
+    from dataclasses import replace as _replace
 
-    from runtime.core.hook_envelope import build_hook_event_envelope as _build_hook_event_envelope
+    from runtime.core.command_intent import build_bash_command_intent as _build_bash_command_intent
 
     raw = sys.stdin.read()
     if not raw or not raw.strip():
@@ -4321,7 +1759,18 @@ def _handle_evaluate(args) -> int:
     except _json.JSONDecodeError as e:
         return _err(f"invalid JSON on stdin: {e}")
 
-    envelope = _build_hook_event_envelope(payload)
+    event_type = payload.get("event_type", "")
+    tool_name = payload.get("tool_name", "")
+    tool_input = payload.get("tool_input", {})
+    cwd = payload.get("cwd", "")
+    actor_role = payload.get("actor_role", "")
+    actor_id = payload.get("actor_id", "")
+    command = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
+    command_intent = (
+        _build_bash_command_intent(command, cwd=cwd)
+        if tool_name == "Bash" and command
+        else None
+    )
 
     # --- Target-aware context resolution (DEC-PE-W3-CTX-001) ---
     # Runtime-owned command intent is now the primary target resolver. When
@@ -4335,6 +1784,37 @@ def _handle_evaluate(args) -> int:
     #   1. explicit payload.target_cwd if present
     #   2. derived command_intent.target_cwd
     #   3. cwd as before
+    resolved_project_root = ""
+    target_cwd = payload.get("target_cwd", "") or ""
+    if target_cwd and command_intent is not None:
+        command_intent = _replace(command_intent, target_cwd=target_cwd)
+    elif not target_cwd and command_intent is not None:
+        target_cwd = command_intent.target_cwd
+    if target_cwd and _os.path.isdir(target_cwd):
+        try:
+            r = _subprocess.run(
+                ["git", "-C", target_cwd, "rev-parse", "--show-toplevel"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if r.returncode == 0:
+                candidate = r.stdout.strip()
+                if candidate and _os.path.isdir(candidate):
+                    resolved_project_root = candidate
+        except Exception:
+            pass
+        # If git root resolution failed (non-git dir), use target_cwd directly
+        if not resolved_project_root:
+            resolved_project_root = target_cwd
+    # DEC-CONV-001: normalize so all DB lookups use the canonical realpath form.
+    # build_context also normalizes, but applying it here ensures the value
+    # logged or passed to other callsites is already canonical.
+    if resolved_project_root:
+        from runtime.core.policy_utils import normalize_path as _normalize_path
+
+        resolved_project_root = _normalize_path(resolved_project_root)
+
     # Fix #175: effective_cwd is the directory policies should treat as "current
     # working directory". When the command targets a repo other than the session
     # cwd (target_cwd was resolved to a project root), use target_cwd so that
@@ -4343,29 +1823,25 @@ def _handle_evaluate(args) -> int:
     # and bash_workflow_scope that re-parsed the raw command with
     # extract_git_target_dir() — those policies now use request.context.project_root
     # or request.cwd and get the right directory without re-parsing.
-    resolved_project_root = envelope.project_root
-    effective_cwd = envelope.effective_cwd
-    runtime_notification: dict | None = None
+    effective_cwd = target_cwd if resolved_project_root else cwd
 
-    conn = _get_conn(project_root=resolved_project_root or None)
+    conn = _get_conn()
     try:
         ctx = policy_engine_mod.build_context(
             conn,
             cwd=effective_cwd,
-            actor_role=envelope.actor_role,
-            actor_id=envelope.actor_id,
-            actor_workflow_id=envelope.actor_workflow_id,
-            session_id=envelope.session_id,
+            actor_role=actor_role,
+            actor_id=actor_id,
             project_root=resolved_project_root,
         )
 
         request = policy_engine_mod.PolicyRequest(
-            event_type=envelope.event_type,
-            tool_name=envelope.tool_name,
-            tool_input=envelope.tool_input,
+            event_type=event_type,
+            tool_name=tool_name,
+            tool_input=tool_input,
             context=ctx,
             cwd=effective_cwd,
-            command_intent=envelope.command_intent,
+            command_intent=command_intent,
         )
 
         decision = policy_engine_mod.default_registry().evaluate(request)
@@ -4381,39 +1857,13 @@ def _handle_evaluate(args) -> int:
         #     → attempt to consume a one-shot approval token. If consumed,
         #       override the deny decision to allow (the token grants the op).
         #       If not consumed, leave the deny in place.
-        #   policy_strikes: [{"project_root": str, "policy_name": str,
-        #                     "scope_key": str, "count": int}]
-        #     → persist escalating warning/deny counters in state.db.
         effects = decision.effects or {}
 
         if effects.get("expire_stale_leases"):
             try:
                 leases_mod.expire_stale(conn)
-                leases_mod.revoke_missing_worktrees(conn)
             except Exception:
                 pass  # Non-fatal: stale cleanup is best-effort
-
-        strike_effects = effects.get("policy_strikes") or []
-        if isinstance(strike_effects, dict):
-            strike_effects = [strike_effects]
-        for strike_effect in strike_effects:
-            if not isinstance(strike_effect, dict):
-                continue
-            try:
-                policy_name = str(strike_effect.get("policy_name") or "")
-                scope_key = str(strike_effect.get("scope_key") or "")
-                project_for_strike = str(strike_effect.get("project_root") or ctx.project_root or "")
-                count = int(strike_effect.get("count") or 0)
-                if policy_name and scope_key and project_for_strike:
-                    policy_strikes_mod.set_count(
-                        conn,
-                        project_root=project_for_strike,
-                        policy_name=policy_name,
-                        scope_key=scope_key,
-                        count=count,
-                    )
-            except Exception:
-                pass  # Non-fatal: the policy decision still stands.
 
         approval_effect = effects.get("check_and_consume_approval")
         if approval_effect and decision.action == "deny":
@@ -4431,73 +1881,6 @@ def _handle_evaluate(args) -> int:
                         )
                 except Exception:
                     pass  # Non-fatal: denial stands if consumption fails
-
-        scratchlane_request_effect = effects.get("request_scratchlane_approval")
-
-        if scratchlane_request_effect and decision.action == "deny":
-            session_id = str(payload.get("session_id") or "")
-            task_slug = str(scratchlane_request_effect.get("task_slug") or "")
-            root_path = str(scratchlane_request_effect.get("root_path") or "")
-            if session_id and task_slug and ctx.project_root:
-                try:
-                    request_record = scratchlanes_mod.request_approval(
-                        conn,
-                        session_id=session_id,
-                        project_root=ctx.project_root,
-                        task_slug=task_slug,
-                        workflow_id=ctx.workflow_id,
-                        requested_path=str(
-                            scratchlane_request_effect.get("requested_path") or ""
-                        ),
-                        tool_name=str(scratchlane_request_effect.get("tool_name") or envelope.tool_name or ""),
-                        request_reason=str(
-                            scratchlane_request_effect.get("request_reason") or ""
-                        ),
-                        requested_by=str(
-                            scratchlane_request_effect.get("requested_by") or "runtime"
-                        ),
-                    )
-                    if str(request_record.get("request_state") or "") != "existing":
-                        runtime_notification = scratchlanes_mod.build_pending_notification(
-                            request_record
-                        )
-                except Exception as exc:
-                    decision = policy_engine_mod.PolicyDecision(
-                        action=decision.action,
-                        reason=(
-                            f"{decision.reason}\n\n"
-                            "Automatic scratchlane approval setup failed, so the "
-                            "runtime cannot consume a yes/no reply for this request. "
-                            "Do not mutate scratchlane permits from Bash; retry "
-                            "through the scratchlane gate with a valid session or "
-                            f"report this control-plane failure. Detail: {exc}"
-                        ),
-                        policy_name=decision.policy_name,
-                        effects=decision.effects,
-                        metadata=decision.metadata,
-                    )
-            elif task_slug and root_path:
-                decision = policy_engine_mod.PolicyDecision(
-                    action=decision.action,
-                    reason=(
-                        f"{decision.reason}\n\n"
-                        "Automatic scratchlane approval could not be registered because "
-                        "the session id was missing from the hook payload. "
-                        "Do not mutate scratchlane permits from Bash; report this "
-                        "as a hook payload bug."
-                    ),
-                    policy_name=decision.policy_name,
-                    effects=decision.effects,
-                    metadata=decision.metadata,
-                )
-
-        admission_carrier_deny = _guardian_admission_carrier_effect(conn, payload, decision)
-        if admission_carrier_deny is not None:
-            decision = admission_carrier_deny
-
-        carrier_deny = _agent_contract_carrier_effect(conn, payload, decision)
-        if carrier_deny is not None:
-            decision = carrier_deny
     finally:
         conn.close()
 
@@ -4507,35 +1890,34 @@ def _handle_evaluate(args) -> int:
     # Claude Code silently discards the permissionDecision and the command
     # executes unblocked. This was the latent root cause of every
     # cc-policy evaluate deny being a no-op since PE-W1 (3be693f).
+    hook_event_name = event_type if event_type in {"WorktreeCreate", "EnterWorktree"} else "PreToolUse"
+
     if decision.action == "deny":
         hook_output = {
-            "hookEventName": "PreToolUse",
+            "hookEventName": hook_event_name,
             "permissionDecision": "deny",
             "permissionDecisionReason": decision.reason,
             "blockingHook": decision.policy_name,
         }
     elif decision.action == "feedback":
         hook_output = {
-            "hookEventName": "PreToolUse",
+            "hookEventName": hook_event_name,
             "additionalContext": decision.reason,
         }
     else:
         hook_output = {
-            "hookEventName": "PreToolUse",
+            "hookEventName": hook_event_name,
             "permissionDecision": "allow",
         }
 
-    response = {
-        "action": decision.action,
-        "reason": decision.reason,
-        "policy_name": decision.policy_name,
-        "hookSpecificOutput": hook_output,
-    }
-    if decision.metadata is not None:
-        response["metadata"] = decision.metadata
-    if runtime_notification is not None:
-        response["runtimeNotification"] = runtime_notification
-    return _ok(response)
+    return _ok(
+        {
+            "action": decision.action,
+            "reason": decision.reason,
+            "policy_name": decision.policy_name,
+            "hookSpecificOutput": hook_output,
+        }
+    )
 
 
 def _handle_evaluate_quick(args) -> int:
@@ -4563,7 +1945,7 @@ def _handle_evaluate_quick(args) -> int:
     Title: evaluate quick exits 1 on ineligible diffs
     Status: accepted
     Rationale: Shell callers (orchestrator scripts) rely on exit code to
-      branch: 0=approved, 1=needs full reviewer. Emitting error JSON to
+      branch: 0=approved, 1=needs full tester. Emitting error JSON to
       stderr follows the cc-policy convention (_err returns exit code 1).
       The full result dict is always in the JSON payload regardless of
       exit code so callers can log the reason.
@@ -4634,7 +2016,6 @@ def _handle_context(args) -> int:
         cwd = _os.environ.get("CLAUDE_PROJECT_DIR", "") or _os.getcwd()
         actor_role = _os.environ.get("CLAUDE_ACTOR_ROLE", "")
         actor_id = _os.environ.get("CLAUDE_ACTOR_ID", "")
-        actor_workflow_id = _os.environ.get("CLAUDE_ACTOR_WORKFLOW_ID", "")
 
         conn = _get_conn()
         try:
@@ -4643,7 +2024,6 @@ def _handle_context(args) -> int:
                 cwd=cwd,
                 actor_role=actor_role,
                 actor_id=actor_id,
-                actor_workflow_id=actor_workflow_id,
             )
         finally:
             conn.close()
@@ -4655,20 +2035,6 @@ def _handle_context(args) -> int:
                 "workflow_id": ctx.workflow_id or "",
             }
         )
-
-    if args.action == "capability-contract":
-        from runtime.core.authority_registry import resolve_contract
-
-        stage = args.stage
-        contract = resolve_contract(stage)
-        if contract is None:
-            from runtime.core.stage_registry import ACTIVE_STAGES
-
-            return _err(
-                f"Unknown or sink stage {stage!r}; "
-                f"valid active stages: {sorted(ACTIVE_STAGES)}"
-            )
-        return _ok({"data": contract.as_prompt_projection()})
 
     return _err(f"unknown context action: {args.action}")
 
@@ -4708,16 +2074,11 @@ def _handle_policy(args) -> int:
         cwd = payload.get("cwd", "")
         actor_role = payload.get("actor_role", "")
         actor_id = payload.get("actor_id", "")
-        actor_workflow_id = payload.get("actor_workflow_id", "")
 
         conn = _get_conn()
         try:
             ctx = policy_engine_mod.build_context(
-                conn,
-                cwd=cwd,
-                actor_role=actor_role,
-                actor_id=actor_id,
-                actor_workflow_id=actor_workflow_id,
+                conn, cwd=cwd, actor_role=actor_role, actor_id=actor_id
             )
         finally:
             conn.close()
@@ -4777,396 +2138,14 @@ def _resolve_project_root(args) -> str:
     return normalize_path(project_root) if project_root else ""
 
 
-def _handle_session_activity(args) -> int:
-    """Handle DB-backed session activity and changed-file tracking."""
-
-    project_root = _resolve_project_root(args)
-    if not project_root:
-        return _err("session-activity requires --project-root or CLAUDE_PROJECT_DIR")
-    session_id = getattr(args, "session_id", "") or ""
-    if not session_id:
-        return _err("session-activity requires --session-id")
-
-    conn = _get_conn(project_root=project_root)
-    try:
-        if args.action == "prompt":
-            result = session_activity_mod.touch_prompt(
-                conn,
-                project_root=project_root,
-                session_id=session_id,
-            )
-            return _ok(result)
-
-        if args.action == "end":
-            result = session_activity_mod.end(
-                conn,
-                project_root=project_root,
-                session_id=session_id,
-            )
-            return _ok(result)
-
-        if args.action == "get":
-            result = session_activity_mod.get(
-                conn,
-                project_root=project_root,
-                session_id=session_id,
-            )
-            return _ok(result or {
-                "found": False,
-                "session_id": session_id,
-                "project_root": project_root,
-                "prompt_count": 0,
-                "started_at": 0,
-                "updated_at": 0,
-                "ended_at": None,
-            })
-
-        if args.action == "change-record":
-            result = session_activity_mod.record_file_change(
-                conn,
-                project_root=project_root,
-                session_id=session_id,
-                file_path=args.file_path,
-            )
-            return _ok(result)
-
-        if args.action == "change-list":
-            result = session_activity_mod.list_file_changes(
-                conn,
-                project_root=project_root,
-                session_id=session_id,
-                limit=getattr(args, "limit", 0) or 0,
-            )
-            return _ok(result)
-    except ValueError as e:
-        return _err(str(e))
-    finally:
-        conn.close()
-
-    return _err(f"unknown session-activity action: {args.action}")
-
-
-def _handle_enforcement_gap(args) -> int:
-    """Handle DB-backed enforcement gap state."""
-
-    project_root = _resolve_project_root(args)
-    if not project_root:
-        return _err("enforcement-gap requires --project-root or CLAUDE_PROJECT_DIR")
-
-    conn = _get_conn(project_root=project_root)
-    try:
-        if args.action == "record":
-            result = enforcement_gaps_mod.record(
-                conn,
-                project_root=project_root,
-                gap_type=args.gap_type,
-                ext=args.ext,
-                tool=getattr(args, "tool", "") or "",
-            )
-            return _ok(result)
-
-        if args.action == "clear":
-            result = enforcement_gaps_mod.clear(
-                conn,
-                project_root=project_root,
-                gap_type=args.gap_type,
-                ext=args.ext,
-            )
-            return _ok(result)
-
-        if args.action == "count":
-            count = enforcement_gaps_mod.count(
-                conn,
-                project_root=project_root,
-                gap_type=args.gap_type,
-                ext=args.ext,
-            )
-            return _ok({
-                "project_root": project_root,
-                "gap_type": args.gap_type,
-                "ext": args.ext.lstrip("."),
-                "count": count,
-            })
-
-        if args.action == "list":
-            items = enforcement_gaps_mod.list_open(conn, project_root=project_root)
-            return _ok({"project_root": project_root, "items": items, "count": len(items)})
-    except ValueError as e:
-        return _err(str(e))
-    finally:
-        conn.close()
-
-    return _err(f"unknown enforcement-gap action: {args.action}")
-
-
-def _handle_lint_state(args) -> int:
-    """Handle DB-backed linter cache and circuit breaker state."""
-
-    project_root = _resolve_project_root(args)
-    if not project_root:
-        return _err("lint-state requires --project-root or CLAUDE_PROJECT_DIR")
-
-    conn = _get_conn(project_root=project_root)
-    try:
-        if args.action == "cache-get":
-            result = lint_state_mod.cache_get(
-                conn,
-                project_root=project_root,
-                ext=args.ext,
-                config_mtime=getattr(args, "config_mtime", 0) or 0,
-            )
-            return _ok(result or {
-                "found": False,
-                "project_root": project_root,
-                "ext": args.ext.lstrip(".").lower(),
-            })
-
-        if args.action == "cache-set":
-            result = lint_state_mod.cache_set(
-                conn,
-                project_root=project_root,
-                ext=args.ext,
-                linter=args.linter,
-                config_mtime=getattr(args, "config_mtime", 0) or 0,
-            )
-            return _ok(result)
-
-        if args.action == "breaker-get":
-            result = lint_state_mod.breaker_get(
-                conn,
-                project_root=project_root,
-                ext=args.ext,
-            )
-            return _ok(result or {
-                "found": False,
-                "project_root": project_root,
-                "ext": args.ext.lstrip(".").lower(),
-                "state": "closed",
-                "failure_count": 0,
-                "updated_at": 0,
-            })
-
-        if args.action == "breaker-set":
-            result = lint_state_mod.breaker_set(
-                conn,
-                project_root=project_root,
-                ext=args.ext,
-                state=args.state,
-                failure_count=args.failure_count,
-                updated_at=getattr(args, "updated_at", None),
-            )
-            return _ok(result)
-
-        if args.action == "breaker-reset":
-            result = lint_state_mod.breaker_reset(
-                conn,
-                project_root=project_root,
-                ext=args.ext,
-            )
-            return _ok(result)
-    except ValueError as e:
-        return _err(str(e))
-    finally:
-        conn.close()
-
-    return _err(f"unknown lint-state action: {args.action}")
-
-
-def _handle_preserved_context(args) -> int:
-    """Handle DB-backed compaction context handoff."""
-
-    project_root = _resolve_project_root(args)
-    if not project_root:
-        return _err("preserved-context requires --project-root or CLAUDE_PROJECT_DIR")
-    session_id = getattr(args, "session_id", "") or ""
-
-    conn = _get_conn(project_root=project_root)
-    try:
-        if args.action == "save":
-            context_text = sys.stdin.read()
-            result = preserved_context_mod.save(
-                conn,
-                project_root=project_root,
-                session_id=session_id,
-                context_text=context_text,
-            )
-            return _ok(result)
-
-        if args.action == "get":
-            result = preserved_context_mod.get(
-                conn,
-                project_root=project_root,
-                session_id=session_id,
-                include_consumed=getattr(args, "include_consumed", False),
-            )
-            return _ok(result or {
-                "found": False,
-                "project_root": project_root,
-                "session_id": session_id,
-            })
-
-        if args.action == "consume":
-            result = preserved_context_mod.consume(
-                conn,
-                project_root=project_root,
-                session_id=session_id,
-            )
-            return _ok(result or {
-                "found": False,
-                "project_root": project_root,
-                "session_id": session_id,
-            })
-    except ValueError as e:
-        return _err(str(e))
-    finally:
-        conn.close()
-
-    return _err(f"unknown preserved-context action: {args.action}")
-
-
-def _handle_scratchlane(args) -> int:
-    """Handle task-local scratchlane permit CRUD.
-
-    Scratchlanes are user-approved artifact roots under
-    ``tmp/<task_slug>``. This handler is intentionally narrow:
-    it resolves the project root, reads/writes the permit table, and returns
-    JSON describing the active root.
-    """
-    project_root = _resolve_project_root(args)
-    if not project_root:
-        return _err("scratchlane requires --project-root or CLAUDE_PROJECT_DIR")
-
-    conn = _get_conn(project_root=project_root)
-    try:
-        if args.action == "grant":
-            record = scratchlanes_mod.grant(
-                conn,
-                project_root,
-                args.task_slug,
-                granted_by=getattr(args, "granted_by", None) or "user",
-                note=getattr(args, "note", None) or "",
-                session_id=getattr(args, "session_id", None) or "",
-                workflow_id=getattr(args, "workflow_id", None) or "",
-                work_item_id=getattr(args, "work_item_id", None) or "",
-                attempt_id=getattr(args, "attempt_id", None) or "",
-            )
-            Path(record["root_path"]).mkdir(parents=True, exist_ok=True)
-            return _ok({"permit": record, "project_root": project_root})
-
-        if args.action == "get":
-            record = scratchlanes_mod.get_active(conn, project_root, args.task_slug)
-            return _ok(
-                {
-                    "project_root": project_root,
-                    "task_slug": args.task_slug,
-                    "found": record is not None,
-                    "permit": record,
-                }
-            )
-
-        if args.action == "revoke":
-            revoked = scratchlanes_mod.revoke(conn, project_root, args.task_slug)
-            return _ok(
-                {
-                    "project_root": project_root,
-                    "task_slug": args.task_slug,
-                    "revoked": revoked,
-                }
-            )
-
-        if args.action == "list":
-            items = scratchlanes_mod.list_active(conn, project_root=project_root)
-            return _ok(
-                {
-                    "project_root": project_root,
-                    "items": items,
-                    "count": len(items),
-                }
-            )
-
-        if args.action == "pending":
-            request = scratchlanes_mod.get_pending(
-                conn,
-                session_id=args.session_id,
-                project_root=project_root,
-            )
-            return _ok(
-                {
-                    "project_root": project_root,
-                    "session_id": args.session_id,
-                    "found": request is not None,
-                    "request": request,
-                }
-            )
-
-        if args.action == "resolve-prompt":
-            prompt = sys.stdin.read()
-            result = scratchlanes_mod.resolve_pending_from_prompt(
-                conn,
-                session_id=args.session_id,
-                project_root=project_root,
-                prompt=prompt,
-                granted_by=getattr(args, "granted_by", None) or "user_prompt",
-            )
-            permit = result.get("permit")
-            if isinstance(permit, dict) and permit.get("root_path"):
-                Path(str(permit["root_path"])).mkdir(parents=True, exist_ok=True)
-            result["project_root"] = project_root
-            result["session_id"] = args.session_id
-            return _ok(result)
-
-        if args.action == "cleanup-empty":
-            result = scratchlanes_mod.cleanup_empty_roots(
-                conn,
-                project_root,
-                session_id=getattr(args, "session_id", None) or "",
-            )
-            return _ok(result)
-    finally:
-        conn.close()
-
-    return _err(f"unknown scratchlane action: {args.action}")
-
-
-def _handle_admission(args) -> int:
-    """Handle Guardian Admission classify/apply operations."""
-    try:
-        payload = json.loads(args.payload)
-    except json.JSONDecodeError as exc:
-        return _err(f"admission {args.action}: payload is not valid JSON: {exc}")
-    if not isinstance(payload, dict):
-        return _err(f"admission {args.action}: payload must be a JSON object")
-
-    project_root = (
-        payload.get("project_root")
-        or work_admission_mod.resolve_project_root(payload)
-        or _resolve_project_root(args)
-    )
-    conn = _get_conn(project_root=project_root or None)
-    try:
-        if args.action == "classify":
-            result = work_admission_mod.classify_payload(conn, payload)
-            return _ok(result)
-
-        if args.action == "apply":
-            result = work_admission_mod.apply_payload(conn, payload)
-            permit = result.get("permit")
-            if isinstance(permit, dict) and permit.get("root_path"):
-                Path(str(permit["root_path"])).mkdir(parents=True, exist_ok=True)
-            return _ok(result)
-    finally:
-        conn.close()
-
-    return _err(f"unknown admission action: {args.action}")
-
-
 def _handle_test_state(args) -> int:
     """Read/write test state via the SQLite test_state table.
 
     Replaces the TKT-STAB-A4 flat-file bridge. The flat-file
     .claude/.test-status is no longer read by this handler — test_state
-    is the canonical authority. Runtime hooks no longer write or read the
-    retired flat-file.
+    is the canonical authority. test-runner.sh may still WRITE the flat-file
+    for backward compatibility (session-init.sh clears it), but no
+    enforcement hook reads it.
 
     @decision DEC-WS3-001
     Title: test-state subcommand reads/writes SQLite, not flat-file
@@ -5257,8 +2236,6 @@ def _handle_eval(args) -> int:
       - ``report`` and ``list`` are read-only.
     """
     if args.action == "run":
-        import runtime.core.eval_runner as eval_runner_mod
-
         scenarios_dir_raw = getattr(args, "scenarios_dir", None)
         fixtures_dir_raw = getattr(args, "fixtures_dir", None)
 
@@ -5331,8 +2308,6 @@ def _handle_eval(args) -> int:
             eval_conn.close()
 
     elif args.action == "list":
-        import runtime.core.eval_runner as eval_runner_mod
-
         scenarios_dir_raw = getattr(args, "scenarios_dir", None)
         fixtures_dir_raw = getattr(args, "fixtures_dir", None)
 
@@ -5599,13 +2574,70 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="domain", required=True)
 
+    doctor_p = subparsers.add_parser("doctor", help="Run v6 install/workflow smoke checks")
+    doctor_p.add_argument(
+        "--project-root",
+        default="",
+        help="Project root used by optional project-scoped doctor exercises",
+    )
+    doctor_p.add_argument(
+        "--exercise-schema-upgrade",
+        action="store_true",
+        help="Exercise stale project DB upgrade on a copied backup; never deletes the live DB",
+    )
+    doctor_p.add_argument(
+        "--schema-upgrade-source-db",
+        default="",
+        help="Explicit stale DB file to copy for --exercise-schema-upgrade",
+    )
+
+    prompt_p = subparsers.add_parser("prompt", help="v6 prompt routing authority")
+    prompt_sub = prompt_p.add_subparsers(dest="action", required=True)
+    pr = prompt_sub.add_parser("route", help="Route a user prompt through v6 runtime")
+    pr.add_argument("--workflow-id", default="default")
+    pr.add_argument("--worktree-path", default="")
+    pr.add_argument("--prompt", default="")
+    pr.add_argument("--stdin", action="store_true")
+    pr.add_argument("--mode", default="v6")
+    pr.add_argument("--goal-id", default="")
+    pr.add_argument("--work-item-id", default="")
+
+    install_p = subparsers.add_parser("install", help="Install/render helpers")
+    install_sub = install_p.add_subparsers(dest="action", required=True)
+    rsn = install_sub.add_parser("render-settings", help="Render isolated Claude settings for this root")
+    rsn.add_argument("--root", default="")
+    rsn.add_argument("--settings", default="")
+    rsn.add_argument("--output", default="")
+
     # schema ensure
     schema_p = subparsers.add_parser("schema", help="Schema management")
     schema_sub = schema_p.add_subparsers(dest="action", required=True)
     schema_sub.add_parser("ensure", help="Create all tables idempotently")
+    schema_exercise = schema_sub.add_parser(
+        "exercise-upgrade",
+        help="Copy a DB and prove stale schema upgrade/reset without touching the source",
+    )
+    schema_exercise.add_argument("--source-db", required=True, help="Stale source DB to copy")
+    schema_exercise.add_argument("--work-dir", default="", help="Directory for the copied exercise DB")
+    schema_exercise.add_argument("--keep-copy", action="store_true", help="Keep temp copy when --work-dir is omitted")
+    schema_exercise.add_argument(
+        "--require-reset",
+        action="store_true",
+        help="Require archive/reset metadata; use for stale DB regression tests",
+    )
 
     # init (backward compat with scaffold)
     subparsers.add_parser("init", help="Alias for schema ensure")
+
+    # proof
+    proof_p = subparsers.add_parser("proof", help="Proof-of-work lifecycle")
+    proof_sub = proof_p.add_subparsers(dest="action", required=True)
+    pg = proof_sub.add_parser("get")
+    pg.add_argument("workflow_id")
+    ps_p = proof_sub.add_parser("set")
+    ps_p.add_argument("workflow_id")
+    ps_p.add_argument("status", choices=["idle", "pending", "verified"])
+    proof_sub.add_parser("list")
 
     # evaluation
     eval_p = subparsers.add_parser("evaluation", help="Evaluator-state readiness authority")
@@ -5680,481 +2712,6 @@ def build_parser() -> argparse.ArgumentParser:
     eq.add_argument("--since", type=int)
     eq.add_argument("--limit", type=int, default=50)
 
-    # hook — ClauDEX hook manifest tooling + runtime hook adapters
-    # (DEC-CLAUDEX-HOOK-MANIFEST-001)
-    hook_p = subparsers.add_parser(
-        "hook",
-        help="ClauDEX hook manifest tools and runtime hook adapters",
-    )
-    hook_sub = hook_p.add_subparsers(dest="action", required=True)
-    hook_sub.add_parser(
-        "envelope",
-        help="Build the canonical hook-event envelope from JSON on stdin",
-    )
-    hook_sub.add_parser(
-        "bash-pre-baseline",
-        help="Capture allowed Bash source baseline from hook payload on stdin",
-    )
-    hook_sub.add_parser(
-        "bash-post",
-        help="Apply PostToolUse Bash lifecycle updates from hook payload on stdin",
-    )
-    hook_validate = hook_sub.add_parser(
-        "validate-settings",
-        help=(
-            "Validate settings.json repo-owned hook wiring against "
-            "runtime.core.hook_manifest; non-zero exit on drift or invalid "
-            "adapter files"
-        ),
-    )
-    hook_validate.add_argument(
-        "--settings-path",
-        default=None,
-        help=(
-            "Path to the settings.json to validate. Defaults to the repo "
-            "root's settings.json."
-        ),
-    )
-
-    hook_doc_check = hook_sub.add_parser(
-        "doc-check",
-        help=(
-            "Validate hooks/HOOKS.md against the runtime-compiled "
-            "hook-doc projection; non-zero exit on drift "
-            "(DEC-CLAUDEX-HOOK-DOC-VALIDATION-001)"
-        ),
-    )
-    hook_doc_check.add_argument(
-        "--doc-path",
-        default=None,
-        help=(
-            "Path to the hook doc to validate. Defaults to the repo "
-            "root's hooks/HOOKS.md."
-        ),
-    )
-
-    # constitution — read-only constitution registry inspection/validation
-    const_p = subparsers.add_parser(
-        "constitution",
-        help="Constitution registry tools (read-only)",
-    )
-    const_sub = const_p.add_subparsers(dest="action", required=True)
-    const_sub.add_parser(
-        "list",
-        help="List all constitution-level entries (concrete + planned) as JSON",
-    )
-    const_validate = const_sub.add_parser(
-        "validate",
-        help=(
-            "Validate that all concrete constitution paths exist on disk; "
-            "non-zero exit when any path is missing"
-        ),
-    )
-    const_validate.add_argument(
-        "--repo-root",
-        default=None,
-        help=(
-            "Path to the repo root for file-existence checks. Defaults to "
-            "the project root."
-        ),
-    )
-
-    # decision — read-only decision-digest CLI projection surface
-    # (DEC-CLAUDEX-DECISION-DIGEST-CLI-001, Phase 7 Slice 14)
-    dec_p = subparsers.add_parser(
-        "decision",
-        help="Decision registry projections (read-only)",
-    )
-    dec_sub = dec_p.add_subparsers(dest="action", required=True)
-    dec_digest = dec_sub.add_parser(
-        "digest",
-        help=(
-            "Render the decision-digest projection from the canonical "
-            "decision records stored in the runtime registry"
-        ),
-    )
-    dec_digest.add_argument(
-        "--cutoff-epoch",
-        default="0",
-        help=(
-            "Inclusive lower bound on DecisionRecord.updated_at. "
-            "Decisions older than this epoch are dropped from the "
-            "projection. Default: 0 (include all)."
-        ),
-    )
-    dec_digest.add_argument(
-        "--generated-at",
-        default=None,
-        help=(
-            "Unix epoch timestamp to stamp on the projection metadata. "
-            "Default: current time."
-        ),
-    )
-    dec_digest.add_argument(
-        "--status",
-        default=None,
-        help="Filter decisions by DecisionRecord.status (optional)",
-    )
-    dec_digest.add_argument(
-        "--scope",
-        default=None,
-        help="Filter decisions by DecisionRecord.scope (optional)",
-    )
-
-    # decision digest-check — Phase 7 Slice 15 read-only drift validation
-    dec_digest_check = dec_sub.add_parser(
-        "digest-check",
-        help=(
-            "Validate a candidate decision-digest body against the "
-            "projection rendered from the canonical decision records; "
-            "exits 0 when healthy and 1 with status=violation on drift"
-        ),
-    )
-    dec_digest_check.add_argument(
-        "--candidate-path",
-        required=True,
-        help=(
-            "Path to the candidate decision-digest file (UTF-8 text). "
-            "Read-only — the CLI never writes to this path."
-        ),
-    )
-    dec_digest_check.add_argument(
-        "--cutoff-epoch",
-        default="0",
-        help=(
-            "Inclusive lower bound on DecisionRecord.updated_at applied "
-            "before rendering the expected body. Default: 0 (include all)."
-        ),
-    )
-    dec_digest_check.add_argument(
-        "--status",
-        default=None,
-        help="Filter decisions by DecisionRecord.status (optional)",
-    )
-    dec_digest_check.add_argument(
-        "--scope",
-        default=None,
-        help="Filter decisions by DecisionRecord.scope (optional)",
-    )
-
-    # decision ingest-commit — Phase 7 Slice 14 write path
-    # (DEC-CLAUDEX-DEC-TRAILER-INGEST-001)
-    dec_ingest = dec_sub.add_parser(
-        "ingest-commit",
-        help=(
-            "Parse commit-message trailers (Decision: DEC-*) and upsert "
-            "matching decision IDs into the canonical decision registry; "
-            "exits 0 on success (including when no trailers are found)"
-        ),
-    )
-    dec_ingest.add_argument(
-        "--sha",
-        required=True,
-        help="Commit SHA to ingest (resolved via git show in --project-root)",
-    )
-    dec_ingest.add_argument(
-        "--project-root",
-        default=None,
-        dest="project_root",
-        help=(
-            "Path to the git repository root. Defaults to the cc-policy "
-            "project root if omitted."
-        ),
-    )
-    dec_ingest.add_argument(
-        "--dry-run",
-        action="store_true",
-        default=False,
-        dest="dry_run",
-        help=(
-            "Parse trailers and report what would be ingested without "
-            "writing to the database; exits 0."
-        ),
-    )
-
-    # decision ingest-range — Phase 7 Slice 15 batch backfill write path
-    # (DEC-CLAUDEX-DEC-INGEST-BACKFILL-001)
-    dec_ingest_range = dec_sub.add_parser(
-        "ingest-range",
-        help=(
-            "Batch-ingest Decision: DEC-* trailers from every commit in a "
-            "git revision range (oldest→newest) into the canonical decision "
-            "registry; exits 0 on success (including empty ranges). "
-            "(DEC-CLAUDEX-DEC-INGEST-BACKFILL-001)"
-        ),
-    )
-    dec_ingest_range.add_argument(
-        "--range",
-        required=True,
-        dest="range",
-        help=(
-            "Git rev-list range spec (e.g. '6869fd3..origin/main' or "
-            "'HEAD~10..HEAD'). Passed verbatim to git rev-list --reverse."
-        ),
-    )
-    dec_ingest_range.add_argument(
-        "--project-root",
-        default=None,
-        dest="project_root",
-        help=(
-            "Path to the git repository root used for git rev-list and "
-            "git show. Defaults to the cc-policy project root if omitted."
-        ),
-    )
-    dec_ingest_range.add_argument(
-        "--dry-run",
-        action="store_true",
-        default=False,
-        dest="dry_run",
-        help=(
-            "Iterate and parse commits but do not write to the database; "
-            "reports commits_scanned and status=ok without DB mutations."
-        ),
-    )
-
-    # decision drift-check — Phase 7 Slice 16 read-only drift detection
-    # (DEC-CLAUDEX-DEC-DRIFT-CHECK-001)
-    dec_drift_check = dec_sub.add_parser(
-        "drift-check",
-        help=(
-            "Compare commit-trailer evidence in a git revision range against "
-            "the current decision registry state; exits 0 when aligned, 1 "
-            "when drift detected (rc=1 with status=ok payload), ≥2 on fatal "
-            "error. Pure read-only — never writes to the decisions table. "
-            "(DEC-CLAUDEX-DEC-DRIFT-CHECK-001)"
-        ),
-    )
-    dec_drift_check.add_argument(
-        "--range",
-        required=True,
-        dest="range",
-        help=(
-            "Git rev-list range spec (e.g. '6869fd3..HEAD' or 'A..B'). "
-            "Passed verbatim to git rev-list --reverse. "
-            "Use the full history root..HEAD for global enforcement."
-        ),
-    )
-    dec_drift_check.add_argument(
-        "--project-root",
-        default=None,
-        dest="project_root",
-        help=(
-            "Path to the git repository root used for git rev-list and "
-            "git show. Defaults to the cc-policy project root if omitted."
-        ),
-    )
-    dec_drift_check.add_argument(
-        "--exit-on-drift",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        dest="exit_on_drift",
-        help=(
-            "When drift is detected, exit with code 1 (default: enabled). "
-            "Use --no-exit-on-drift to emit the drift payload with exit 0 "
-            "(useful for informational CI steps that should never block)."
-        ),
-    )
-
-    # prompt-pack — read-only ClauDEX prompt-pack drift validation
-    # (DEC-CLAUDEX-PROMPT-PACK-CHECK-CLI-001)
-    pp_p = subparsers.add_parser(
-        "prompt-pack",
-        help="ClauDEX prompt-pack tools (read-only)",
-    )
-    pp_sub = pp_p.add_subparsers(dest="action", required=True)
-    pp_check = pp_sub.add_parser(
-        "check",
-        help=(
-            "Validate a candidate prompt-pack body against the "
-            "runtime-compiled expected projection; non-zero exit "
-            "on drift (DEC-CLAUDEX-PROMPT-PACK-VALIDATION-001)"
-        ),
-    )
-    pp_check.add_argument(
-        "--candidate-path",
-        required=True,
-        help="Path to the candidate prompt-pack body file",
-    )
-    pp_check.add_argument(
-        "--inputs-path",
-        required=True,
-        help=(
-            "Path to a JSON file supplying the compiler inputs: "
-            "workflow_id (string), stage_id (string), layers "
-            "(object), generated_at (int), and optional "
-            "manifest_version (string). When --metadata-path is "
-            "also supplied, this inputs object must additionally "
-            "include watched_files (list of non-empty strings)"
-        ),
-    )
-    # Phase 7 Slice 12 — optional metadata drift gate
-    # (DEC-CLAUDEX-PROMPT-PACK-METADATA-VALIDATION-001).
-    pp_check.add_argument(
-        "--metadata-path",
-        default=None,
-        help=(
-            "Optional path to a JSON file containing the candidate "
-            "prompt-pack metadata envelope (the ``metadata`` object "
-            "from ``cc-policy prompt-pack compile``). When supplied, "
-            "the CLI additionally validates the metadata against "
-            "the compiler-rebuilt expected metadata; overall exit "
-            "is 0 only when both body and metadata reports are "
-            "healthy. Requires inputs.watched_files (list of non-"
-            "empty strings) to be present"
-        ),
-    )
-
-    # prompt-pack compile — read-only operator-preview surface on top
-    # of the single compiler authority
-    # (DEC-CLAUDEX-PROMPT-PACK-COMPILE-CLI-001). id mode only.
-    pp_compile = pp_sub.add_parser(
-        "compile",
-        help=(
-            "Compile a prompt pack via the single compiler authority "
-            "in id mode and print the rendered body + identity fields "
-            "as JSON (read-only, DEC-CLAUDEX-PROMPT-PACK-COMPILE-CLI-001)"
-        ),
-    )
-    pp_compile.add_argument(
-        "--workflow-id",
-        required=True,
-        help="Workflow identifier (runtime.core.workflows)",
-    )
-    pp_compile.add_argument(
-        "--stage-id",
-        required=True,
-        help="Stage identifier (runtime.core.stage_registry)",
-    )
-    pp_compile.add_argument(
-        "--goal-id",
-        required=True,
-        help="goal_contracts.goal_id to resolve via workflow_contract_capture",
-    )
-    pp_compile.add_argument(
-        "--work-item-id",
-        required=True,
-        help="work_items.work_item_id to resolve via workflow_contract_capture",
-    )
-    pp_compile.add_argument(
-        "--decision-scope",
-        required=True,
-        help="Exact-match scope string for the decision capture query",
-    )
-    pp_compile.add_argument(
-        "--generated-at",
-        type=int,
-        required=True,
-        help="Unix epoch seconds stamped into ProjectionMetadata.generated_at",
-    )
-    pp_compile.add_argument(
-        "--finding",
-        action="append",
-        default=[],
-        help=(
-            "Unresolved finding identifier (repeatable). When provided, "
-            "overrides live findings from the reviewer findings ledger. "
-            "When absent, open findings are read from the ledger automatically"
-        ),
-    )
-    pp_compile.add_argument(
-        "--current-branch",
-        default=None,
-        help=(
-            "Optional explicit current branch override — takes precedence "
-            "over the workflow binding's branch column"
-        ),
-    )
-    pp_compile.add_argument(
-        "--worktree-path",
-        default=None,
-        help=(
-            "Optional explicit worktree path override — takes precedence "
-            "over the workflow binding's worktree_path column"
-        ),
-    )
-    pp_compile.add_argument(
-        "--manifest-version",
-        default=None,
-        help=(
-            "Optional manifest version string stamped into the prompt "
-            "pack's ProjectionMetadata.source_versions and provenance. "
-            "Defaults to runtime.core.prompt_pack.MANIFEST_VERSION"
-        ),
-    )
-
-    # prompt-pack subagent-start — thin adapter over the composition helper
-    # (DEC-CLAUDEX-PROMPT-PACK-SUBAGENT-START-CLI-001)
-    pp_sa = pp_sub.add_parser(
-        "subagent-start",
-        help=(
-            "Build a SubagentStart hook envelope from a JSON payload "
-            "(read-only, DEC-CLAUDEX-PROMPT-PACK-SUBAGENT-START-CLI-001)"
-        ),
-    )
-    pp_sa.add_argument(
-        "--payload",
-        required=True,
-        help=(
-            "JSON object carrying the six request-contract fields at top level: "
-            "workflow_id, stage_id, goal_id, work_item_id, decision_scope (strings), "
-            "generated_at (int unix epoch seconds)"
-        ),
-    )
-
-    # shadow — read-only ClauDEX shadow observer reporting
-    # (DEC-CLAUDEX-SHADOW-PARITY-001)
-    shadow_p = subparsers.add_parser(
-        "shadow",
-        help="ClauDEX shadow observer tools (read-only)",
-    )
-    shadow_sub = shadow_p.add_subparsers(dest="action", required=True)
-    sr_parity = shadow_sub.add_parser(
-        "parity-report",
-        help="Aggregate recent shadow_stage_decision events into a JSON summary",
-    )
-    sr_parity.add_argument(
-        "--source",
-        default=None,
-        help="Filter by events.source (e.g. 'workflow:wf-foo')",
-    )
-    sr_parity.add_argument(
-        "--since",
-        type=int,
-        default=None,
-        help="Earliest created_at (unix epoch seconds) to include",
-    )
-    sr_parity.add_argument(
-        "--limit",
-        type=int,
-        default=200,
-        help="Maximum number of shadow_stage_decision rows to aggregate (default 200)",
-    )
-
-    sr_invariant = shadow_sub.add_parser(
-        "parity-invariant",
-        help=(
-            "Exit non-zero if shadow_stage_decision events show any "
-            "unspecified_divergence or unknown reason code"
-        ),
-    )
-    sr_invariant.add_argument(
-        "--source",
-        default=None,
-        help="Filter by events.source (e.g. 'workflow:wf-foo')",
-    )
-    sr_invariant.add_argument(
-        "--since",
-        type=int,
-        default=None,
-        help="Earliest created_at (unix epoch seconds) to include",
-    )
-    sr_invariant.add_argument(
-        "--limit",
-        type=int,
-        default=200,
-        help="Maximum number of shadow_stage_decision rows to inspect (default 200)",
-    )
-
     # worktree
     wt_p = subparsers.add_parser("worktree", help="Worktree registry")
     wt_sub = wt_p.add_subparsers(dest="action", required=True)
@@ -6200,44 +2757,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Base branch for the new worktree (default: main)",
     )
 
-    # worktree retire — W-WTR-1 (DEC-WT-RETIRE-001)
-    # Guardian calls this after successful landing to atomically clean up.
-    wt_ret = wt_sub.add_parser(
-        "retire",
-        help=(
-            "Retire a feature worktree: git worktree remove, git branch -d, "
-            "DB soft-delete, explicit lease revocation (W-WTR-1, DEC-WT-RETIRE-003a)"
-        ),
-    )
-    wt_ret.add_argument(
-        "--workflow-id",
-        dest="workflow_id",
-        required=True,
-        help="Workflow ID whose worktree is being retired",
-    )
-    wt_ret.add_argument(
-        "--feature-name",
-        dest="feature_name",
-        required=True,
-        help="Feature name (used to compute branch feature/<name> and path .worktrees/feature-<name>)",
-    )
-    wt_ret.add_argument(
-        "--project-root",
-        dest="project_root",
-        default=None,
-        help="Git repo root (defaults to CLAUDE_PROJECT_DIR env var)",
-    )
-    wt_ret.add_argument(
-        "--force",
-        dest="force",
-        action="store_true",
-        default=False,
-        help=(
-            "Use git branch -D (force-delete) instead of -d. "
-            "Required for unmerged branches. Default: false."
-        ),
-    )
-
     # dispatch
     # lifecycle: agent marker lifecycle (single authority for on-stop by role)
     lc_p = subparsers.add_parser("lifecycle", help="Agent marker lifecycle")
@@ -6248,7 +2767,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     lc_onstop.add_argument(
         "agent_type",
-        help="Role to match for deactivation (implementer, reviewer, guardian, planner)",
+        help="Role to match for deactivation (implementer, tester, guardian, planner)",
     )
     # ENFORCE-RCA-6-ext/#26: scoped deactivation prevents the handler from
     # grabbing a globally-newer active marker from an unrelated project and
@@ -6266,8 +2785,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Scope deactivation further to this workflow_id",
     )
 
-    dp_p = subparsers.add_parser("dispatch", help="Dispatch engine operations")
+    dp_p = subparsers.add_parser("dispatch", help="Dispatch queue and cycles")
     dp_sub = dp_p.add_subparsers(dest="action", required=True)
+    deq = dp_sub.add_parser("enqueue")
+    deq.add_argument("role")
+    deq.add_argument("--ticket")
+    dn = dp_sub.add_parser("next")
+    dn.add_argument("--workflow-id", dest="workflow_id", default="")
+    dti = dp_sub.add_parser("ticket-issue", help="Issue v6 launch ticket for a pending next action")
+    dti.add_argument("id", type=int)
+    dpn = dp_sub.add_parser("pump-next", help="Return next v6 Agent launch envelope")
+    dpn.add_argument("--workflow-id", dest="workflow_id", default="")
+    dst = dp_sub.add_parser("start")
+    dst.add_argument("id", type=int)
+    dco = dp_sub.add_parser("complete")
+    dco.add_argument("id", type=int)
+    dcs = dp_sub.add_parser("cycle-start")
+    dcs.add_argument("initiative")
+    dp_sub.add_parser("cycle-current")
 
     # process-stop: reads JSON from stdin, returns hookSpecificOutput
     dp_sub.add_parser(
@@ -6275,27 +2810,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Process an agent stop event (JSON on stdin). Returns hookSpecificOutput.",
     )
 
-    # agent-prompt: runtime-owned producer for Agent tool prompt bodies
-    # (DEC-CLAUDEX-AGENT-PROMPT-001). Emits prompt_prefix containing the
-    # CLAUDEX_CONTRACT_BLOCK: line so pre-agent.sh can extract the six contract
-    # fields at PreToolUse:Agent time.
-    dap = dp_sub.add_parser(
-        "agent-prompt",
-        help=(
-            "Produce an Agent tool prompt prefix containing a CLAUDEX_CONTRACT_BLOCK line. "
-            "Resolves goal_id and work_item_id from runtime state when omitted."
-        ),
-    )
-    dap.add_argument("--workflow-id", dest="workflow_id", required=True)
-    dap.add_argument("--stage-id", dest="stage_id", required=True)
-    dap.add_argument("--goal-id", dest="goal_id", default=None)
-    dap.add_argument("--work-item-id", dest="work_item_id", default=None)
-    dap.add_argument("--decision-scope", dest="decision_scope", default="kernel")
-    dap.add_argument("--generated-at", dest="generated_at", type=int, default=None)
-
     # agent-start / agent-stop: marker lifecycle
     das = dp_sub.add_parser("agent-start", help="Mark agent as active (set marker)")
-    das.add_argument("agent_type", help="Role (implementer, reviewer, guardian, planner)")
+    das.add_argument("agent_type", help="Role (implementer, tester, guardian, planner)")
     das.add_argument("agent_id", help="Unique agent identifier")
     # W-CONV-2: optional scoping so subagent-start.sh can write project-scoped markers
     das.add_argument(
@@ -6315,162 +2832,97 @@ def build_parser() -> argparse.ArgumentParser:
     dae.add_argument("agent_type", help="Role (for symmetry; not used in deactivation query)")
     dae.add_argument("agent_id", help="Unique agent identifier")
 
-    # attempt-issue: PreToolUse:Agent → issue a pending dispatch_attempts row
-    # (DEC-CLAUDEX-HOOK-WIRING-001)
-    daip = dp_sub.add_parser(
-        "attempt-issue",
-        help=(
-            "Issue a pending dispatch attempt at PreToolUse:Agent time. "
-            "Upserts agent_sessions + seats on the fly."
-        ),
-    )
-    daip.add_argument(
-        "--session-id", dest="session_id", required=True,
-        help="Orchestrator session_id from PreToolUse payload",
-    )
-    daip.add_argument(
-        "--agent-type", dest="agent_type", required=True,
-        help="tool_input.subagent_type from PreToolUse payload",
-    )
-    daip.add_argument(
-        "--instruction", dest="instruction", default="",
-        help="Diagnostic label (e.g. the CLAUDEX_CONTRACT_BLOCK line). Not the full prompt.",
-    )
-    daip.add_argument(
-        "--workflow-id", dest="workflow_id", default=None,
-        help="Optional workflow binding extracted from the contract block",
-    )
-    daip.add_argument(
-        "--timeout-at", dest="timeout_at", type=int, default=None,
-        help="Optional Unix timestamp for stale-attempt sweep",
-    )
-
-    # attempt-claim: SubagentStart → claim delivery on the most recent pending attempt
-    # (DEC-CLAUDEX-HOOK-WIRING-001)
-    dacp = dp_sub.add_parser(
-        "attempt-claim",
-        help=(
-            "Claim delivery of the most recent pending attempt at SubagentStart time. "
-            "Returns {found: false} when no pending attempt exists."
-        ),
-    )
-    dacp.add_argument(
-        "--session-id", dest="session_id", required=True,
-        help="session_id from SubagentStart payload",
-    )
-    dacp.add_argument(
-        "--agent-type", dest="agent_type", required=True,
-        help="agent_type from SubagentStart payload",
-    )
-    dacp.add_argument(
-        "--attempt-id", dest="attempt_id", default="",
-        help="Specific dispatch_attempts.attempt_id consumed from the carrier row",
-    )
-    dacp.add_argument(
-        "--agent-id", dest="agent_id", default="",
-        help="child agent_id from the SubagentStart payload",
-    )
-
-    dafp = dp_sub.add_parser(
-        "attempt-fail",
-        help="Mark a carrier-backed dispatch attempt failed after SubagentStart validation fails.",
-    )
-    dafp.add_argument("--attempt-id", dest="attempt_id", required=True)
-    dafp.add_argument("--reason", dest="reason", required=True)
-
-    # attempt-expire-stale: sweep stale pending/delivered attempts → timed_out
-    # Intended for periodic runtime maintenance.
-    daes = dp_sub.add_parser(
-        "attempt-expire-stale",
-        help=(
-            "Sweep pending/delivered dispatch attempts past timeout_at and "
-            "optionally expire legacy pending rows with no timeout_at."
-        ),
-    )
-    daes.add_argument(
-        "--fallback-pending-max-age-seconds",
-        dest="fallback_pending_max_age_seconds",
-        type=int,
-        default=0,
-        help=(
-            "Optional legacy cleanup threshold: expire pending rows with "
-            "timeout_at NULL older than this many seconds."
-        ),
-    )
-
-    # sweep-dead: runtime-owned dead-loop recovery (DEC-DEAD-RECOVERY-001).
-    # Thin adapter over runtime.core.dead_recovery.sweep_all(). Run after
-    # attempt-expire-stale so silent-death cases (no SubagentStop event) are
-    # recovered by the runtime rather than by stop-hook recursion.
-    dsw = dp_sub.add_parser(
-        "sweep-dead",
-        help=(
-            "Mark active seats with past-grace terminal attempts as dead "
-            "and cascade-close their supervision_threads; transition "
-            "every-seat-terminal sessions to completed or dead."
-        ),
-    )
-    dsw.add_argument(
-        "--grace-seconds",
-        dest="grace_seconds",
-        type=int,
-        default=None,
-        help=(
-            "Minimum age (seconds) a terminal dispatch_attempt must reach "
-            "before its seat is eligible for sweeping. Defaults to "
-            "runtime.core.dead_recovery.DEFAULT_GRACE_SECONDS."
-        ),
-    )
-
-    # seat-release: release a seat and abandon its active supervision_threads
-    # (DEC-SUPERVISION-THREADS-DOMAIN-001 continuation).  Thin adapter over
-    # runtime.core.dispatch_hook.release_session_seat().
-    dsr = dp_sub.add_parser(
-        "seat-release",
-        help=(
-            "Release a session seat and abandon every active supervision_thread "
-            "where it is supervisor or worker."
-        ),
-    )
-    dsr.add_argument(
-        "--session-id", dest="session_id", required=True,
-        help="Orchestrator session_id for the seat being released",
-    )
-    dsr.add_argument(
-        "--agent-type", dest="agent_type", required=True,
-        help="Harness agent_type the seat was created for",
-    )
+    # v6 stage machine
+    stg_p = subparsers.add_parser("stage", help="v6 stage-machine runs, tickets, and results")
+    stg_sub = stg_p.add_subparsers(dest="action", required=True)
+    stg_sub.add_parser("graph", help="Return the v6 stage graph")
+    sr_create = stg_sub.add_parser("run-create", help="Create a v6 stage run")
+    sr_create.add_argument("--workflow-id", required=True)
+    sr_create.add_argument("--stage-id", required=True)
+    sr_create.add_argument("--goal-id", default="")
+    sr_create.add_argument("--work-item-id", default="")
+    sr_create.add_argument("--parent-run-id", default="")
+    sr_create.add_argument("--worktree-path", default="")
+    sr_create.add_argument("--input-json", default="")
+    sr_get = stg_sub.add_parser("run-get", help="Read a v6 stage run")
+    sr_get.add_argument("stage_run_id")
+    sr_list = stg_sub.add_parser("run-list", help="List v6 stage runs")
+    sr_list.add_argument("--workflow-id", default="")
+    sr_list.add_argument("--status", dest="status_filter", default="")
+    sr_list.add_argument("--limit", type=int, default=50)
+    ti = stg_sub.add_parser("ticket-issue", help="Issue launch ticket for a stage run")
+    ti.add_argument("stage_run_id")
+    tc = stg_sub.add_parser("ticket-claim", help="Claim launch ticket before Agent spawn")
+    tc.add_argument("ticket_id")
+    tc.add_argument("--subagent-type", default="")
+    tc.add_argument("--session-id", default="")
+    tc.add_argument("--agent-id", default="")
+    tctx = stg_sub.add_parser("ticket-context", help="Render SubagentStart context for a claimed ticket")
+    tctx.add_argument("ticket_id")
+    tp = stg_sub.add_parser("ticket-parse", help="Parse a v6 launch ticket from Agent prompt text")
+    tp.add_argument("--prompt", default="")
+    tp.add_argument("--stdin", action="store_true")
+    bs = stg_sub.add_parser("bootstrap", help="Ensure an initial/next v6 launch ticket for this workflow")
+    bs.add_argument("--workflow-id", default="default")
+    bs.add_argument("--worktree-path", default="")
+    bs.add_argument("--goal-id", default="")
+    bs.add_argument("--work-item-id", default="")
+    bs.add_argument("--prompt", default="")
+    scx = stg_sub.add_parser("start-context", help="Resolve claimed v6 ticket context at SubagentStart")
+    scx.add_argument("--subagent-type", required=True)
+    scx.add_argument("--session-id", default="")
+    scx.add_argument("--agent-id", default="")
+    scx.add_argument("--agent-ref", default="", help="PreToolUse launch ref, usually Agent tool_use_id")
+    scx.add_argument("--claim-token", default="")
+    scx.add_argument("--ticket-id", default="")
+    scx.add_argument("--workflow-id", default="default")
+    scx.add_argument("--worktree-path", default="")
+    scx.add_argument("--prompt", default="")
+    scx.add_argument("--stdin", action="store_true")
+    lc = stg_sub.add_parser("launch-claim", help="Best-effort claim for a natural Agent launch")
+    lc.add_argument("--subagent-type", required=True)
+    lc.add_argument("--workflow-id", default="default")
+    lc.add_argument("--worktree-path", default="")
+    lc.add_argument("--session-id", default="")
+    lc.add_argument("--agent-id", default="")
+    lc.add_argument("--launch-tool-id", default="")
+    lc.add_argument("--goal-id", default="")
+    lc.add_argument("--work-item-id", default="")
+    lc.add_argument("--prompt", default="")
+    lc.add_argument("--stdin", action="store_true")
+    rs = stg_sub.add_parser("result-submit", help="Submit canonical v6 result contract")
+    rs.add_argument("stage_run_id")
+    rs.add_argument("--payload", default="")
+    rs.add_argument("--raw-response", action="store_true")
+    stg_sub.add_parser("result-extract-submit", help="Extract final claude_ctrl_result from stdin and submit")
+    cw = stg_sub.add_parser("critic-worker", help="Run pending v6 critic stages outside hooks")
+    cw.add_argument("--workflow-id", default="")
+    cw.add_argument("--providers", default="")
+    cw.add_argument("--timeout", type=int, default=60)
+    cw.add_argument("--limit", type=int, default=10)
+    cw.add_argument("--dry-run", action="store_true")
+    cw.add_argument("--no-submit", action="store_true")
+    cr = stg_sub.add_parser("critic-run", help="Run v6 critic providers for a critic stage")
+    cr.add_argument("stage_run_id")
+    cr.add_argument("--providers", default="", help="Comma-separated providers, default env/codex,gemini,critic-subagent")
+    cr.add_argument("--timeout", type=int, default=60)
+    cr.add_argument("--subject", default="")
+    cr.add_argument("--dry-run", action="store_true")
+    cr.add_argument("--submit", action="store_true", help="Submit completed critic result back into the stage machine")
+    cl = stg_sub.add_parser("critic-latest", help="Return latest critic run for a stage")
+    cl.add_argument("stage_run_id")
+    lr = stg_sub.add_parser("landing-ready", help="Compute v6 Guardian landing readiness for guardian:land stage")
+    lr.add_argument("stage_run_id")
+    lg = stg_sub.add_parser("landing-get", help="Get v6 Guardian landing readiness row")
+    lg.add_argument("stage_run_id")
+    li = stg_sub.add_parser("landing-invalidate", help="Invalidate ready v6 landing aggregates for a workflow")
+    li.add_argument("--workflow-id", required=True)
+    li.add_argument("--reason", default="source_changed")
 
     # statusline
     sl_p = subparsers.add_parser("statusline", help="Runtime-backed statusline snapshot")
     sl_sub = sl_p.add_subparsers(dest="action", required=True)
     sl_sub.add_parser("snapshot")
-    sl_h = sl_sub.add_parser(
-        "hygiene",
-        help="Classify checkout dirt into active, baseline, ephemeral, and unexpected buckets",
-    )
-    sl_h.add_argument(
-        "--worktree-path",
-        dest="worktree_path",
-        required=True,
-        help="Path to the git worktree whose dirt should be classified",
-    )
-
-    # doc — hook-surface reference validation (Invariant #8,
-    # DEC-DOC-REF-VALIDATION-001)
-    doc_p = subparsers.add_parser(
-        "doc",
-        help="Markdown doc reference validation (read-only)",
-    )
-    doc_sub = doc_p.add_subparsers(dest="action", required=True)
-    doc_ref = doc_sub.add_parser(
-        "ref-check",
-        help=(
-            "Scan a markdown file for hook-surface references and diff "
-            "them against HOOK_MANIFEST. Exit non-zero on drift."
-        ),
-    )
-    doc_ref.add_argument("path", help="Path to the markdown file to validate")
 
     # trace
     tr_p = subparsers.add_parser("trace", help="Trace-lite session manifests and summaries")
@@ -6479,7 +2931,7 @@ def build_parser() -> argparse.ArgumentParser:
     tr_start = tr_sub.add_parser("start", help="Begin a new trace for a session")
     tr_start.add_argument("session_id")
     tr_start.add_argument(
-        "--role", dest="role", default=None, help="Agent role (implementer, reviewer, planner, ...)"
+        "--role", dest="role", default=None, help="Agent role (implementer, tester, planner, ...)"
     )
     tr_start.add_argument("--ticket", default=None, help="Ticket reference (e.g. TKT-013)")
 
@@ -6545,15 +2997,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     wf_get = wf_sub.add_parser("get", help="Get binding for a workflow_id")
     wf_get.add_argument("workflow_id")
-    wf_get.add_argument(
-        "--worktree-path",
-        dest="worktree_path",
-        default=None,
-        help=(
-            "Optional repo/worktree root used for DB routing when the caller is "
-            "querying a workflow outside the current session repo."
-        ),
-    )
 
     wf_scope_set = wf_sub.add_parser("scope-set", help="Set scope manifest for a workflow")
     wf_scope_set.add_argument("workflow_id")
@@ -6566,38 +3009,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--authorities", default="[]", help="JSON array of authority domain names"
     )
 
-    # DEC-CLAUDEX-SCOPE-TRIAD-UNIFIED-WRITE-AUTHORITY-001: scope-sync atomically
-    # writes BOTH the workflow_scope enforcement row and work_items.scope_json in
-    # a single SQLite transaction, preventing the dual-write-path drift that causes
-    # _validate_work_item_scope_matches_authority to fire at prompt-pack compile time.
-    # This is the blessed orchestrator path; scope-set and work-item-set --scope-json
-    # remain as lower-level primitives.
-    wf_scope_sync = wf_sub.add_parser(
-        "scope-sync",
-        help=(
-            "Atomically write ScopeManifest to both workflow_scope and "
-            "work_items.scope_json from a single scope file "
-            "(DEC-CLAUDEX-SCOPE-TRIAD-UNIFIED-WRITE-AUTHORITY-001)"
-        ),
-    )
-    wf_scope_sync.add_argument("workflow_id")
-    wf_scope_sync.add_argument(
-        "--work-item-id",
-        dest="work_item_id",
-        required=True,
-        help="work_item_id whose scope_json column will be updated (must already exist)",
-    )
-    wf_scope_sync.add_argument(
-        "--scope-file",
-        dest="scope_file",
-        required=True,
-        help=(
-            "Path to a JSON file containing the scope triad: allowed_paths, "
-            "required_paths, forbidden_paths (JSON arrays of strings), and "
-            "optionally state_domains or authority_domains. Unknown keys are rejected."
-        ),
-    )
-
     wf_scope_get = wf_sub.add_parser("scope-get", help="Get scope manifest for a workflow")
     wf_scope_get.add_argument("workflow_id")
 
@@ -6605,346 +3016,7 @@ def build_parser() -> argparse.ArgumentParser:
     wf_scope_check.add_argument("workflow_id")
     wf_scope_check.add_argument("--changed", default="[]", help="JSON array of changed file paths")
 
-    wf_stage_packet = wf_sub.add_parser(
-        "stage-packet",
-        help=(
-            "Return the canonical execution packet for a workflow stage: "
-            "dispatch contract, agent tool spec, contracts, scope, runtime state, "
-            "and canonical readback command forms. workflow_id may be omitted "
-            "when runtime can resolve a bound worktree context."
-        ),
-    )
-    wf_stage_packet.add_argument(
-        "workflow_id",
-        nargs="?",
-        default=None,
-        help=(
-            "Optional workflow_id. When omitted, runtime resolves the bound "
-            "workflow from --worktree-path, CLAUDE_PROJECT_DIR, or the current "
-            "git worktree."
-        ),
-    )
-    wf_stage_packet.add_argument("--stage-id", dest="stage_id", required=True)
-    wf_stage_packet.add_argument("--goal-id", dest="goal_id", default=None)
-    wf_stage_packet.add_argument("--work-item-id", dest="work_item_id", default=None)
-    wf_stage_packet.add_argument(
-        "--worktree-path",
-        dest="worktree_path",
-        default=None,
-        help="Optional worktree path used for workflow bootstrap when workflow_id is omitted",
-    )
-    wf_stage_packet.add_argument("--decision-scope", dest="decision_scope", default="kernel")
-    wf_stage_packet.add_argument("--generated-at", dest="generated_at", type=int, default=None)
-
-    def _add_workflow_bootstrap_args(
-        parser,
-        *,
-        require_desired_end_state: bool,
-        defaults_from_request: bool,
-    ):
-        parser.add_argument("workflow_id")
-        parser.add_argument(
-            "--desired-end-state",
-            dest="desired_end_state",
-            required=require_desired_end_state,
-            default=None if defaults_from_request else None,
-            help="Free-text description of what the initial local workflow adoption is trying to achieve",
-        )
-        if defaults_from_request:
-            parser.add_argument(
-                "--bootstrap-token",
-                dest="bootstrap_token",
-                required=True,
-                help="One-shot token minted by `cc-policy workflow bootstrap-request`.",
-            )
-        parser.add_argument(
-            "--title",
-            default=None if defaults_from_request else "Initial planning bootstrap",
-            help="Title for the initial planner work item",
-        )
-        parser.add_argument(
-            "--goal-id",
-            dest="goal_id",
-            default=None if defaults_from_request else "g-initial-planning",
-            help="Goal id to seed when workflow bootstrap creates the first active goal",
-        )
-        parser.add_argument(
-            "--work-item-id",
-            dest="work_item_id",
-            default=None if defaults_from_request else "wi-initial-planning",
-            help="Work item id to seed when workflow bootstrap creates the first in-progress planner work item",
-        )
-        parser.add_argument(
-            "--worktree-path",
-            dest="worktree_path",
-            default=None,
-            help="Optional path to the git worktree to bootstrap; defaults to the current git repo",
-        )
-        parser.add_argument(
-            "--base-branch",
-            dest="base_branch",
-            default=None if defaults_from_request else "main",
-        )
-        parser.add_argument("--ticket", default=None)
-        parser.add_argument("--initiative", default=None)
-        parser.add_argument(
-            "--autonomy-budget",
-            dest="autonomy_budget",
-            type=int,
-            default=None if defaults_from_request else 0,
-        )
-        parser.add_argument(
-            "--decision-scope",
-            dest="decision_scope",
-            default=None if defaults_from_request else "kernel",
-        )
-        parser.add_argument("--generated-at", dest="generated_at", type=int, default=None)
-
-    wf_bootstrap_request = wf_sub.add_parser(
-        "bootstrap-request",
-        help=(
-            "Mint a one-shot bootstrap token for a fresh local workflow adoption. "
-            "This records explicit operator intent and returns the exact "
-            "bootstrap-local command to run next."
-        ),
-    )
-    _add_workflow_bootstrap_args(
-        wf_bootstrap_request,
-        require_desired_end_state=True,
-        defaults_from_request=False,
-    )
-    wf_bootstrap_request.add_argument(
-        "--requested-by",
-        required=True,
-        help="Human or operator identity requesting the local workflow bootstrap",
-    )
-    wf_bootstrap_request.add_argument(
-        "--justification",
-        required=True,
-        help="Why this fresh workflow bootstrap is being requested",
-    )
-    wf_bootstrap_request.add_argument(
-        "--ttl-seconds",
-        dest="ttl_seconds",
-        type=int,
-        default=workflow_bootstrap_mod.DEFAULT_BOOTSTRAP_REQUEST_TTL_SECONDS,
-        help="Lifetime of the one-shot bootstrap token before it expires",
-    )
-
-    wf_bootstrap_local = wf_sub.add_parser(
-        "bootstrap-local",
-        help=(
-            "Consume a runtime-issued bootstrap token to bootstrap a fresh local "
-            "workflow: require git identity, resolve the canonical local "
-            ".claude/state.db, bind the workflow, seed the initial active goal "
-            "+ in-progress planner work item, and return the canonical planner "
-            "launch spec."
-        ),
-    )
-    _add_workflow_bootstrap_args(
-        wf_bootstrap_local,
-        require_desired_end_state=False,
-        defaults_from_request=True,
-    )
-
-    # Compatibility alias — same authority, hidden from help. This is not a
-    # separate bootstrap path.
-    wf_bootstrap_planner = wf_sub.add_parser("bootstrap-planner", help=argparse.SUPPRESS)
-    _add_workflow_bootstrap_args(
-        wf_bootstrap_planner,
-        require_desired_end_state=False,
-        defaults_from_request=True,
-    )
-
     wf_sub.add_parser("list", help="List all workflow bindings")
-
-    wf_unbind = wf_sub.add_parser(
-        "unbind",
-        help="Remove workflow binding row (idempotent; also drops matching scope row)",
-    )
-    wf_unbind.add_argument("workflow_id")
-
-    wf_scope_unset = wf_sub.add_parser(
-        "scope-unset",
-        help="Remove workflow scope manifest row (idempotent; leaves binding intact)",
-    )
-    wf_scope_unset.add_argument("workflow_id")
-
-    # DEC-CLAUDEX-DW-WORKFLOW-JOIN-001: workflow-scoped seeding verbs.
-    # Before this slice no orchestrator-facing CLI surface existed to create a
-    # goal or work_item bound to a workflow_id — callers had to reach
-    # decision_work_registry through Python. The new verbs close that gap and
-    # enforce the binding-exists precondition so seeds cannot be attached to
-    # workflows that have no worktree/branch authority.
-    wf_goal_set = wf_sub.add_parser(
-        "goal-set",
-        help="Create or upsert a goal scoped to a bound workflow_id",
-    )
-    wf_goal_set.add_argument("workflow_id")
-    wf_goal_set.add_argument("goal_id")
-    wf_goal_set.add_argument(
-        "--desired-end-state",
-        dest="desired_end_state",
-        required=True,
-        help="Free-text description of the goal's completion criterion",
-    )
-    wf_goal_set.add_argument(
-        "--status",
-        default="active",
-        choices=sorted(["active", "awaiting_user", "complete", "blocked_external"]),
-    )
-    wf_goal_set.add_argument(
-        "--autonomy-budget",
-        dest="autonomy_budget",
-        type=int,
-        default=0,
-        help="Integer budget of autonomous steps the goal may spend",
-    )
-    wf_goal_set.add_argument(
-        "--continuation-rules-json",
-        dest="continuation_rules_json",
-        default="[]",
-        help="JSON array of continuation rule strings",
-    )
-    wf_goal_set.add_argument(
-        "--stop-conditions-json",
-        dest="stop_conditions_json",
-        default="[]",
-        help="JSON array of stop-condition strings",
-    )
-    wf_goal_set.add_argument(
-        "--escalation-boundaries-json",
-        dest="escalation_boundaries_json",
-        default="[]",
-        help="JSON array of escalation-boundary strings",
-    )
-    wf_goal_set.add_argument(
-        "--user-decision-boundaries-json",
-        dest="user_decision_boundaries_json",
-        default="[]",
-        help="JSON array of user-decision-boundary strings",
-    )
-
-    wf_goal_get = wf_sub.add_parser(
-        "goal-get",
-        help="Read back a goal record by goal_id",
-    )
-    wf_goal_get.add_argument("goal_id")
-
-    wf_wi_set = wf_sub.add_parser(
-        "work-item-set",
-        help="Create or upsert a work_item scoped to a bound workflow_id",
-    )
-    wf_wi_set.add_argument("workflow_id")
-    wf_wi_set.add_argument("goal_id")
-    wf_wi_set.add_argument("work_item_id")
-    wf_wi_set.add_argument(
-        "--title", required=True, help="Human-readable work-item title"
-    )
-    wf_wi_set.add_argument(
-        "--status",
-        default="in_progress",
-        choices=sorted(
-            [
-                "pending",
-                "in_progress",
-                "in_review",
-                "ready_to_land",
-                "landed",
-                "needs_changes",
-                "blocked_by_plan",
-                "abandoned",
-            ]
-        ),
-    )
-    wf_wi_set.add_argument("--version", type=int, default=1)
-    wf_wi_set.add_argument("--author", default="planner")
-    wf_wi_set.add_argument(
-        "--scope-json",
-        dest="scope_json",
-        default=None,
-        help="JSON Scope Manifest (allowed/required/forbidden/state_domains)",
-    )
-    wf_wi_set.add_argument(
-        "--evaluation-json",
-        dest="evaluation_json",
-        default=None,
-        help=(
-            "JSON Evaluation Contract — 9 legal keys (DEC-CLAUDEX-EVAL-CONTRACT-SCHEMA-PARITY-001): "
-            "required_tests, required_evidence, "
-            "required_real_path_checks, required_authority_invariants, "
-            "required_integration_points, forbidden_shortcuts, "
-            "rollback_boundary, acceptance_notes, "
-            "ready_for_guardian_definition. "
-            "Tuple-valued keys accept JSON arrays of strings; "
-            "string-valued keys accept JSON strings. "
-            "Unknown keys raise ValueError at decode time."
-        ),
-    )
-    wf_wi_set.add_argument(
-        "--head-sha",
-        dest="head_sha",
-        default=None,
-        help="Optional commit SHA the work_item currently points at",
-    )
-    wf_wi_set.add_argument(
-        "--reviewer-round",
-        dest="reviewer_round",
-        type=int,
-        default=0,
-    )
-
-    wf_wi_get = wf_sub.add_parser(
-        "work-item-get",
-        help="Read back a work_item record by work_item_id",
-    )
-    wf_wi_get.add_argument("work_item_id")
-
-    wf_wi_grant_get = wf_sub.add_parser(
-        "work-item-grant-get",
-        help="Read the effective landing grant attached to a work_item",
-    )
-    wf_wi_grant_get.add_argument("work_item_id")
-
-    wf_wi_grant_set = wf_sub.add_parser(
-        "work-item-grant-set",
-        help="Set the durable branch-commit/autoland grant for a work_item",
-    )
-    wf_wi_grant_set.add_argument("workflow_id")
-    wf_wi_grant_set.add_argument("work_item_id")
-    wf_wi_grant_set.add_argument(
-        "--merge-strategy",
-        default="no_ff",
-        choices=["no_ff", "ff_only", "squash", "manual"],
-    )
-    wf_wi_grant_set.add_argument(
-        "--no-commit-branch",
-        action="store_true",
-        default=False,
-        help="Disable implementer checkpoint commits on the scoped branch",
-    )
-    wf_wi_grant_set.add_argument(
-        "--no-request-review",
-        action="store_true",
-        default=False,
-        help="Disable automatic reviewer handoff from this work item",
-    )
-    wf_wi_grant_set.add_argument(
-        "--no-autoland",
-        action="store_true",
-        default=False,
-        help="Require explicit approval before Guardian autoland",
-    )
-    wf_wi_grant_set.add_argument(
-        "--requires-user-approval",
-        action="append",
-        choices=sorted(approvals_mod.VALID_OP_TYPES),
-        help=(
-            "Approval-gated op for this work item. May be repeated. "
-            "Defaults to destructive/history-rewrite/admin-recovery ops."
-        ),
-    )
-    wf_wi_grant_set.add_argument("--granted-by", default="planner")
 
     # bug pipeline
     bug_p = subparsers.add_parser("bug", help="Canonical bug-filing pipeline")
@@ -6977,50 +3049,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     bug_sub.add_parser("retry-failed", help="Retry all failed_to_file bugs")
 
-    # issue capture
-    issue_p = subparsers.add_parser(
-        "issue", help="Canonical issue/backlog capture pipeline"
-    )
-    issue_sub = issue_p.add_subparsers(dest="action", required=True)
-
-    issue_qualify = issue_sub.add_parser("qualify", help="Dry-run qualification check")
-    issue_qualify.add_argument("json_payload", nargs="?", metavar="JSON")
-    issue_qualify.add_argument("--kind", dest="item_kind", default=None)
-    issue_qualify.add_argument("--title", default=None)
-    issue_qualify.add_argument("--evidence", default=None)
-
-    issue_file = issue_sub.add_parser("file", help="Capture and file an issue")
-    issue_file.add_argument("json_payload", nargs="?", metavar="JSON")
-    issue_file.add_argument("--kind", dest="item_kind", default=None)
-    issue_file.add_argument("--title", default=None)
-    issue_file.add_argument("--body", default=None)
-    issue_file.add_argument(
-        "--scope", default=None, help="auto | project | config | global"
-    )
-    issue_file.add_argument("--repo", default=None, help="Explicit owner/repo target")
-    issue_file.add_argument("--source-component", dest="source_component", default=None)
-    issue_file.add_argument("--file-path", dest="file_path", default=None)
-    issue_file.add_argument("--evidence", default=None)
-    issue_file.add_argument("--project-root", dest="project_root", default=None)
-
-    issue_list = issue_sub.add_parser("list", help="List captured issues")
-    issue_list.add_argument("--disposition", default=None)
-    issue_list.add_argument("--kind", dest="item_kind", default=None)
-    issue_list.add_argument("--limit", type=int, default=50)
-    issue_list.add_argument("--project-root", dest="project_root", default=None)
-
-    issue_retry = issue_sub.add_parser("retry-failed", help="Retry failed captures")
-    issue_retry.add_argument("--project-root", dest="project_root", default=None)
-
     # approval
-    ap_p = subparsers.add_parser(
-        "approval", help="One-shot approval tokens for guarded git ops"
-    )
+    ap_p = subparsers.add_parser("approval", help="One-shot approval tokens for high-risk git ops")
     ap_sub = ap_p.add_subparsers(dest="action", required=True)
 
-    ap_grant = ap_sub.add_parser(
-        "grant", help="Grant one-shot approval for a guarded git op"
-    )
+    ap_grant = ap_sub.add_parser("grant", help="Grant one-shot approval for a high-risk op")
     ap_grant.add_argument("workflow_id")
     ap_grant.add_argument(
         "op_type",
@@ -7042,7 +3075,7 @@ def build_parser() -> argparse.ArgumentParser:
     ls_sub = ls_p.add_subparsers(dest="action", required=True)
 
     ls_issue = ls_sub.add_parser("issue-for-dispatch", help="Issue a new dispatch lease")
-    ls_issue.add_argument("role", help="Agent role (implementer, reviewer, guardian, planner)")
+    ls_issue.add_argument("role", help="Agent role (implementer, tester, guardian, planner)")
     ls_issue.add_argument("--workflow-id", dest="workflow_id", default=None)
     ls_issue.add_argument("--worktree-path", dest="worktree_path", default=None)
     ls_issue.add_argument("--branch", default=None)
@@ -7135,132 +3168,8 @@ def build_parser() -> argparse.ArgumentParser:
         "route",
         help="Determine the next role given (role, verdict) using the canonical routing table",
     )
-    co_route.add_argument("role", help="Completing role (reviewer, guardian, implementer, planner)")
+    co_route.add_argument("role", help="Completing role (tester, guardian, implementer, planner)")
     co_route.add_argument("verdict", help="Verdict string from the completion record")
-
-    # critic-review
-    cr_p = subparsers.add_parser(
-        "critic-review",
-        help="Persist and query implementer critic reviews that drive inner-loop routing",
-    )
-    cr_sub = cr_p.add_subparsers(dest="action", required=True)
-
-    cr_submit = cr_sub.add_parser("submit", help="Record a critic verdict")
-    cr_submit.add_argument("--workflow-id", dest="workflow_id", required=True)
-    cr_submit.add_argument("--lease-id", dest="lease_id", default="")
-    cr_submit.add_argument("--role", default="implementer")
-    cr_submit.add_argument("--provider", default="codex")
-    cr_submit.add_argument("--verdict", required=True)
-    cr_submit.add_argument("--summary", default="")
-    cr_submit.add_argument("--detail", default="")
-    cr_submit.add_argument("--fingerprint", default="")
-    cr_submit.add_argument("--project-root", dest="project_root", default="")
-    cr_submit.add_argument(
-        "--metadata",
-        default="{}",
-        help="JSON object with hook/runtime metadata for this critic run",
-    )
-
-    cr_latest = cr_sub.add_parser("latest", help="Return the most recent critic review")
-    cr_latest.add_argument("--workflow-id", dest="workflow_id", default=None)
-    cr_latest.add_argument("--lease-id", dest="lease_id", default=None)
-    cr_latest.add_argument("--role", default="implementer")
-
-    cr_list = cr_sub.add_parser("list", help="List critic reviews")
-    cr_list.add_argument("--workflow-id", dest="workflow_id", default=None)
-    cr_list.add_argument("--lease-id", dest="lease_id", default=None)
-    cr_list.add_argument("--role", default=None)
-    cr_list.add_argument("--limit", type=int, default=None)
-
-    # critic-run
-    crun_p = subparsers.add_parser(
-        "critic-run",
-        help="Persist and query Codex critic lifecycle telemetry, progress, and metrics",
-    )
-    crun_sub = crun_p.add_subparsers(dest="action", required=True)
-
-    crun_start = crun_sub.add_parser("start", help="Start a critic telemetry run")
-    crun_start.add_argument("--workflow-id", dest="workflow_id", required=True)
-    crun_start.add_argument("--lease-id", dest="lease_id", default="")
-    crun_start.add_argument("--role", default="implementer")
-    crun_start.add_argument("--provider", default="codex")
-    crun_start.add_argument("--run-id", dest="run_id", default="")
-    crun_start.add_argument("--status", dest="run_status", default="started")
-
-    crun_progress = crun_sub.add_parser("progress", help="Append critic run progress")
-    crun_progress.add_argument("--run-id", dest="run_id", required=True)
-    crun_progress.add_argument("--message", required=True)
-    crun_progress.add_argument("--phase", default="")
-    crun_progress.add_argument("--status", dest="run_status", default="")
-
-    crun_complete = crun_sub.add_parser("complete", help="Complete a critic telemetry run")
-    crun_complete.add_argument("--run-id", dest="run_id", required=True)
-    crun_complete.add_argument("--verdict", required=True)
-    crun_complete.add_argument("--provider", default="")
-    crun_complete.add_argument("--summary", default="")
-    crun_complete.add_argument("--detail", default="")
-    crun_complete.add_argument("--artifact-path", dest="artifact_path", default="")
-    crun_complete.add_argument("--fingerprint", default="")
-    crun_complete.add_argument("--review-id", dest="review_id", type=int, default=None)
-    crun_complete.add_argument("--fallback", default="")
-    crun_complete.add_argument("--error", default="")
-    crun_complete.add_argument("--metrics", default="{}")
-
-    crun_fb = crun_sub.add_parser(
-        "fallback-complete",
-        help="Mark the latest unavailable critic run as handled",
-    )
-    crun_fb.add_argument("--workflow-id", dest="workflow_id", required=True)
-    crun_fb.add_argument("--fallback", default="reviewer")
-    crun_fb.add_argument("--summary", default="")
-
-    crun_latest = crun_sub.add_parser("latest", help="Return the latest critic telemetry run")
-    crun_latest.add_argument("--workflow-id", dest="workflow_id", default=None)
-    crun_latest.add_argument("--role", default="implementer")
-
-    crun_list = crun_sub.add_parser("list", help="List critic telemetry runs")
-    crun_list.add_argument("--workflow-id", dest="workflow_id", default=None)
-    crun_list.add_argument("--role", default=None)
-    crun_list.add_argument("--status", dest="run_status", default=None)
-    crun_list.add_argument("--limit", type=int, default=None)
-
-    crun_metrics = crun_sub.add_parser("metrics", help="Aggregate critic run success metrics")
-    crun_metrics.add_argument("--workflow-id", dest="workflow_id", default=None)
-    crun_metrics.add_argument("--role", default="implementer")
-
-    # critic — single-authority implementer critic context resolver (DEC-CRITIC-CONTEXT-001)
-    critic_p = subparsers.add_parser(
-        "critic",
-        help="Implementer critic context resolution (single authority, DEC-CRITIC-CONTEXT-001)",
-    )
-    critic_sub = critic_p.add_subparsers(dest="subcommand", required=True)
-
-    critic_ctx_p = critic_sub.add_parser(
-        "context",
-        help="Resolve critic context (workflow_id, lease_id) from hook input",
-    )
-    critic_ctx_sub = critic_ctx_p.add_subparsers(dest="action", required=True)
-
-    critic_ctx_resolve = critic_ctx_sub.add_parser(
-        "resolve",
-        help=(
-            "Resolve implementer workflow_id + lease_id from a SubagentStop hook input JSON. "
-            "Priority: agent_id > cwd > fallback_worktree_path. "
-            "Returns {found, workflow_id, lease_id, worktree_path, agent_id, resolve_path, error}."
-        ),
-    )
-    critic_ctx_resolve.add_argument(
-        "--hook-input",
-        dest="hook_input",
-        required=True,
-        help="SubagentStop hook input JSON string",
-    )
-    critic_ctx_resolve.add_argument(
-        "--fallback-worktree-path",
-        dest="fallback_worktree_path",
-        default="",
-        help="Last-resort worktree_path when agent_id and cwd both miss (optional)",
-    )
 
     # sidecar
     sc_p = subparsers.add_parser("sidecar", help="Shadow-mode read-only sidecars")
@@ -7317,15 +3226,6 @@ def build_parser() -> argparse.ArgumentParser:
             "Used by SubagentStop hooks to get the stopping agent's identity."
         ),
     )
-    cap_contract_p = ctx_sub.add_parser(
-        "capability-contract",
-        help="Return the capability contract for a stage as JSON (read-only projection).",
-    )
-    cap_contract_p.add_argument(
-        "--stage",
-        required=True,
-        help="Stage identifier (e.g. 'planner', 'reviewer', 'guardian:land') or live alias (e.g. 'Plan').",
-    )
 
     # policy — list and explain registered policies
     pol_p = subparsers.add_parser("policy", help="Policy registry introspection")
@@ -7336,129 +3236,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run all policies without short-circuit and return full trace (JSON on stdin)",
     )
 
-    # session-activity: DB-backed prompt/session changed-file state
-    sa_p = subparsers.add_parser(
-        "session-activity",
-        help="Read/write session prompt counts and changed files in SQLite",
-    )
-    sa_sub = sa_p.add_subparsers(dest="action", required=True)
-    _sa_root_kwargs = dict(
-        dest="project_root",
-        default=None,
-        help="Path to project root (falls back to CLAUDE_PROJECT_DIR or git root)",
-    )
-
-    sa_prompt = sa_sub.add_parser("prompt", help="Increment prompt count for a session")
-    sa_prompt.add_argument("--project-root", **_sa_root_kwargs)
-    sa_prompt.add_argument("--session-id", dest="session_id", required=True)
-
-    sa_end = sa_sub.add_parser("end", help="Mark a session ended")
-    sa_end.add_argument("--project-root", **_sa_root_kwargs)
-    sa_end.add_argument("--session-id", dest="session_id", required=True)
-
-    sa_get = sa_sub.add_parser("get", help="Get session activity")
-    sa_get.add_argument("--project-root", **_sa_root_kwargs)
-    sa_get.add_argument("--session-id", dest="session_id", required=True)
-
-    sa_change_record = sa_sub.add_parser(
-        "change-record",
-        help="Record a changed file for a session",
-    )
-    sa_change_record.add_argument("--project-root", **_sa_root_kwargs)
-    sa_change_record.add_argument("--session-id", dest="session_id", required=True)
-    sa_change_record.add_argument("--file-path", dest="file_path", required=True)
-
-    sa_change_list = sa_sub.add_parser(
-        "change-list",
-        help="List changed files for a session",
-    )
-    sa_change_list.add_argument("--project-root", **_sa_root_kwargs)
-    sa_change_list.add_argument("--session-id", dest="session_id", required=True)
-    sa_change_list.add_argument("--limit", type=int, default=0)
-
-    # enforcement-gap: DB-backed linter coverage gap state
-    eg_p = subparsers.add_parser(
-        "enforcement-gap",
-        help="Read/write linter enforcement gaps in SQLite",
-    )
-    eg_sub = eg_p.add_subparsers(dest="action", required=True)
-    _eg_root_kwargs = dict(
-        dest="project_root",
-        default=None,
-        help="Path to project root (falls back to CLAUDE_PROJECT_DIR or git root)",
-    )
-    for _eg_action in ("record", "clear", "count"):
-        _eg_parser = eg_sub.add_parser(_eg_action, help=f"{_eg_action} an enforcement gap")
-        _eg_parser.add_argument("--project-root", **_eg_root_kwargs)
-        _eg_parser.add_argument("--gap-type", dest="gap_type", required=True)
-        _eg_parser.add_argument("--ext", required=True)
-        if _eg_action == "record":
-            _eg_parser.add_argument("--tool", default="")
-    eg_list = eg_sub.add_parser("list", help="List open enforcement gaps")
-    eg_list.add_argument("--project-root", **_eg_root_kwargs)
-
-    # lint-state: DB-backed linter cache and circuit breaker state
-    ls_p = subparsers.add_parser(
-        "lint-state",
-        help="Read/write linter cache and circuit breaker state in SQLite",
-    )
-    ls_sub = ls_p.add_subparsers(dest="action", required=True)
-    _ls_root_kwargs = dict(
-        dest="project_root",
-        default=None,
-        help="Path to project root (falls back to CLAUDE_PROJECT_DIR or git root)",
-    )
-
-    ls_cache_get = ls_sub.add_parser("cache-get", help="Get fresh cached linter for an extension")
-    ls_cache_get.add_argument("--project-root", **_ls_root_kwargs)
-    ls_cache_get.add_argument("--ext", required=True)
-    ls_cache_get.add_argument("--config-mtime", dest="config_mtime", type=int, default=0)
-
-    ls_cache_set = ls_sub.add_parser("cache-set", help="Set cached linter for an extension")
-    ls_cache_set.add_argument("--project-root", **_ls_root_kwargs)
-    ls_cache_set.add_argument("--ext", required=True)
-    ls_cache_set.add_argument("--linter", required=True)
-    ls_cache_set.add_argument("--config-mtime", dest="config_mtime", type=int, default=0)
-
-    ls_breaker_get = ls_sub.add_parser("breaker-get", help="Get lint circuit breaker state")
-    ls_breaker_get.add_argument("--project-root", **_ls_root_kwargs)
-    ls_breaker_get.add_argument("--ext", required=True)
-
-    ls_breaker_set = ls_sub.add_parser("breaker-set", help="Set lint circuit breaker state")
-    ls_breaker_set.add_argument("--project-root", **_ls_root_kwargs)
-    ls_breaker_set.add_argument("--ext", required=True)
-    ls_breaker_set.add_argument("--state", required=True, choices=sorted(lint_state_mod.VALID_BREAKER_STATES))
-    ls_breaker_set.add_argument("--failure-count", dest="failure_count", type=int, required=True)
-    ls_breaker_set.add_argument("--updated-at", dest="updated_at", type=int, default=None)
-
-    ls_breaker_reset = ls_sub.add_parser("breaker-reset", help="Reset lint circuit breaker state")
-    ls_breaker_reset.add_argument("--project-root", **_ls_root_kwargs)
-    ls_breaker_reset.add_argument("--ext", required=True)
-
-    # preserved-context: DB-backed PreCompact -> SessionStart handoff
-    pc_p = subparsers.add_parser(
-        "preserved-context",
-        help="Read/write compaction handoff context in SQLite",
-    )
-    pc_sub = pc_p.add_subparsers(dest="action", required=True)
-    _pc_root_kwargs = dict(
-        dest="project_root",
-        default=None,
-        help="Path to project root (falls back to CLAUDE_PROJECT_DIR or git root)",
-    )
-    pc_save = pc_sub.add_parser("save", help="Save context text from stdin")
-    pc_save.add_argument("--project-root", **_pc_root_kwargs)
-    pc_save.add_argument("--session-id", dest="session_id", default="")
-
-    pc_get = pc_sub.add_parser("get", help="Get unconsumed context for a session")
-    pc_get.add_argument("--project-root", **_pc_root_kwargs)
-    pc_get.add_argument("--session-id", dest="session_id", default="")
-    pc_get.add_argument("--include-consumed", action="store_true")
-
-    pc_consume = pc_sub.add_parser("consume", help="Consume context for a session")
-    pc_consume.add_argument("--project-root", **_pc_root_kwargs)
-    pc_consume.add_argument("--session-id", dest="session_id", default="")
-
+    # test-state: flat-file bridge (TKT-STAB-A4)
     # test-state: SQLite-backed authority (WS3 — replaces flat-file bridge)
     ts_p = subparsers.add_parser(
         "test-state", help="Read/write test state from the SQLite test_state table"
@@ -7480,86 +3258,6 @@ def build_parser() -> argparse.ArgumentParser:
     ts_set.add_argument("--passed", type=int, default=0, help="Number of passing tests")
     ts_set.add_argument("--failed", type=int, default=0, help="Number of failing tests")
     ts_set.add_argument("--total", type=int, default=0, help="Total test count")
-
-    # admission — Guardian Admission custody classifier
-    adm_p = subparsers.add_parser(
-        "admission",
-        help="Guardian Admission custody classifier",
-    )
-    adm_sub = adm_p.add_subparsers(dest="action", required=True)
-    adm_classify = adm_sub.add_parser(
-        "classify",
-        help="Classify implementation/source-write custody from a JSON payload",
-    )
-    adm_classify.add_argument(
-        "--payload",
-        required=True,
-        help="JSON object with trigger, cwd/project_root/target_path, and optional runtime ids",
-    )
-    adm_apply = adm_sub.add_parser(
-        "apply",
-        help="Apply the admission decision when scratchlane custody is authorized",
-    )
-    adm_apply.add_argument(
-        "--payload",
-        required=True,
-        help="JSON object with trigger, cwd/project_root/target_path, and optional runtime ids",
-    )
-
-    # scratchlane — task-local artifact roots under tmp/<task>
-    sl_p = subparsers.add_parser(
-        "scratchlane",
-        help="Task-local scratchlane permits under tmp/",
-    )
-    sl_sub = sl_p.add_subparsers(dest="action", required=True)
-    _sl_root_kwargs = {
-        "dest": "project_root",
-        "default": None,
-        "help": "Project root (defaults to CLAUDE_PROJECT_DIR or git root)",
-    }
-
-    sl_grant = sl_sub.add_parser("grant", help="Grant or refresh a scratchlane permit")
-    sl_grant.add_argument("--task-slug", dest="task_slug", required=True)
-    sl_grant.add_argument("--granted-by", dest="granted_by", default="user")
-    sl_grant.add_argument("--note", dest="note", default="")
-    sl_grant.add_argument("--session-id", dest="session_id", default="")
-    sl_grant.add_argument("--workflow-id", dest="workflow_id", default="")
-    sl_grant.add_argument("--work-item-id", dest="work_item_id", default="")
-    sl_grant.add_argument("--attempt-id", dest="attempt_id", default="")
-    sl_grant.add_argument("--project-root", **_sl_root_kwargs)
-
-    sl_get = sl_sub.add_parser("get", help="Get the active scratchlane permit for a task")
-    sl_get.add_argument("--task-slug", dest="task_slug", required=True)
-    sl_get.add_argument("--project-root", **_sl_root_kwargs)
-
-    sl_revoke = sl_sub.add_parser("revoke", help="Revoke the active scratchlane permit")
-    sl_revoke.add_argument("--task-slug", dest="task_slug", required=True)
-    sl_revoke.add_argument("--project-root", **_sl_root_kwargs)
-
-    sl_list = sl_sub.add_parser("list", help="List active scratchlane permits")
-    sl_list.add_argument("--project-root", **_sl_root_kwargs)
-
-    sl_pending = sl_sub.add_parser(
-        "pending",
-        help="Get the pending scratchlane approval request for a session",
-    )
-    sl_pending.add_argument("--session-id", dest="session_id", required=True)
-    sl_pending.add_argument("--project-root", **_sl_root_kwargs)
-
-    sl_resolve = sl_sub.add_parser(
-        "resolve-prompt",
-        help="Resolve a pending scratchlane request from a user prompt read on stdin",
-    )
-    sl_resolve.add_argument("--session-id", dest="session_id", required=True)
-    sl_resolve.add_argument("--granted-by", dest="granted_by", default="user_prompt")
-    sl_resolve.add_argument("--project-root", **_sl_root_kwargs)
-
-    sl_cleanup = sl_sub.add_parser(
-        "cleanup-empty",
-        help="Remove empty scratchlane roots for a completed session",
-    )
-    sl_cleanup.add_argument("--session-id", dest="session_id", required=True)
-    sl_cleanup.add_argument("--project-root", **_sl_root_kwargs)
 
     # eval — Behavioral Evaluation Framework CLI
     ev_p = subparsers.add_parser("eval", help="Behavioral Evaluation Framework")
@@ -7650,7 +3348,7 @@ def build_parser() -> argparse.ArgumentParser:
     obs_emit.add_argument("value", type=float, help="Scalar metric value")
     obs_emit.add_argument("--labels", default=None, help="JSON object of label key/value pairs")
     obs_emit.add_argument("--session-id", dest="session_id", default=None)
-    obs_emit.add_argument("--role", default=None, help="Agent role (implementer, reviewer, ...)")
+    obs_emit.add_argument("--role", default=None, help="Agent role (implementer, tester, ...)")
 
     obs_sub.add_parser(
         "emit-batch",
@@ -7701,153 +3399,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     obs_sub.add_parser("status", help="Return high-level observatory status")
     obs_sub.add_parser("summary", help="Run full analysis and record an obs_run")
-
-    # agent-session — agent_sessions domain authority
-    # (DEC-AGENT-SESSION-DOMAIN-001).  Read/transition surface over the
-    # runtime-owned session state machine.  Session creation is NOT
-    # exposed here: sessions are bootstrapped exclusively through
-    # dispatch_hook.ensure_session_and_seat (PreToolUse:Agent path).
-    as_p = subparsers.add_parser(
-        "agent-session",
-        help="Agent-session lifecycle + query authority",
-    )
-    as_sub = as_p.add_subparsers(dest="action", required=True)
-
-    as_get = as_sub.add_parser("get", help="Fetch an agent_sessions row by id")
-    as_get.add_argument("--session-id", dest="session_id", required=True)
-
-    as_mc = as_sub.add_parser(
-        "mark-completed", help="Transition an active session to completed"
-    )
-    as_mc.add_argument("--session-id", dest="session_id", required=True)
-
-    as_md = as_sub.add_parser(
-        "mark-dead", help="Transition an active session to dead"
-    )
-    as_md.add_argument("--session-id", dest="session_id", required=True)
-
-    as_mo = as_sub.add_parser(
-        "mark-orphaned", help="Transition an active session to orphaned"
-    )
-    as_mo.add_argument("--session-id", dest="session_id", required=True)
-
-    as_la = as_sub.add_parser(
-        "list-active",
-        help="List every active session (optionally filtered by workflow_id)",
-    )
-    as_la.add_argument("--workflow-id", dest="workflow_id", default=None)
-
-    # seat — seats domain authority (DEC-SEAT-DOMAIN-001).  Read/transition
-    # surface over the runtime-owned seat state machine.  Seat creation is
-    # NOT exposed here: seats are bootstrapped exclusively through
-    # dispatch_hook.ensure_session_and_seat (PreToolUse:Agent path).
-    seat_p = subparsers.add_parser(
-        "seat",
-        help="Seat lifecycle + query authority",
-    )
-    seat_sub = seat_p.add_subparsers(dest="action", required=True)
-
-    seat_get = seat_sub.add_parser("get", help="Fetch a seat row by id")
-    seat_get.add_argument("--seat-id", dest="seat_id", required=True)
-
-    seat_rel = seat_sub.add_parser(
-        "release", help="Transition an active seat to released"
-    )
-    seat_rel.add_argument("--seat-id", dest="seat_id", required=True)
-
-    seat_dead = seat_sub.add_parser(
-        "mark-dead", help="Transition a seat (from active or released) to dead"
-    )
-    seat_dead.add_argument("--seat-id", dest="seat_id", required=True)
-
-    seat_lfs = seat_sub.add_parser(
-        "list-for-session",
-        help="List seats for a session (optionally filtered by status)",
-    )
-    seat_lfs.add_argument("--session-id", dest="session_id", required=True)
-    seat_lfs.add_argument("--status", dest="status", default=None)
-
-    seat_sub.add_parser(
-        "list-active", help="List every seat whose status is active"
-    )
-
-    # supervision — supervision_threads domain authority
-    # (DEC-SUPERVISION-THREADS-DOMAIN-001). Runtime-owned CRUD + state queries
-    # for recursive-supervision relationships between seats.
-    sup_p = subparsers.add_parser(
-        "supervision",
-        help="Supervision-thread relationships between seats",
-    )
-    sup_sub = sup_p.add_subparsers(dest="action", required=True)
-
-    sup_attach = sup_sub.add_parser(
-        "attach", help="Create a new active supervision_thread row"
-    )
-    sup_attach.add_argument("--supervisor-seat-id", dest="supervisor_seat_id", required=True)
-    sup_attach.add_argument("--worker-seat-id", dest="worker_seat_id", required=True)
-    sup_attach.add_argument(
-        "--thread-type",
-        dest="thread_type",
-        required=True,
-        help="One of SUPERVISION_THREAD_TYPES",
-    )
-
-    sup_detach = sup_sub.add_parser(
-        "detach", help="Transition an active thread to completed"
-    )
-    sup_detach.add_argument("--thread-id", dest="thread_id", required=True)
-
-    sup_abandon = sup_sub.add_parser(
-        "abandon", help="Transition an active thread to abandoned (supervisor died)"
-    )
-    sup_abandon.add_argument("--thread-id", dest="thread_id", required=True)
-
-    sup_get = sup_sub.add_parser("get", help="Fetch a supervision_thread row by id")
-    sup_get.add_argument("--thread-id", dest="thread_id", required=True)
-
-    sup_lfs = sup_sub.add_parser(
-        "list-for-supervisor",
-        help="List threads owned by a supervisor seat (optionally filtered by status)",
-    )
-    sup_lfs.add_argument("--supervisor-seat-id", dest="supervisor_seat_id", required=True)
-    sup_lfs.add_argument("--status", dest="status", default=None)
-
-    sup_lfw = sup_sub.add_parser(
-        "list-for-worker",
-        help="List threads targeting a worker seat (optionally filtered by status)",
-    )
-    sup_lfw.add_argument("--worker-seat-id", dest="worker_seat_id", required=True)
-    sup_lfw.add_argument("--status", dest="status", default=None)
-
-    sup_lses = sup_sub.add_parser(
-        "list-for-session",
-        help="List threads whose supervisor or worker seat belongs to a session",
-    )
-    sup_lses.add_argument("--agent-session-id", dest="agent_session_id", required=True)
-    sup_lses.add_argument("--status", dest="status", default=None)
-
-    sup_lst = sup_sub.add_parser(
-        "list-for-seat",
-        help="List threads where a seat appears as supervisor or worker",
-    )
-    sup_lst.add_argument("--seat-id", dest="seat_id", required=True)
-    sup_lst.add_argument("--status", dest="status", default=None)
-
-    sup_afs = sup_sub.add_parser(
-        "abandon-for-seat",
-        help="Abandon every active thread where a seat is supervisor or worker",
-    )
-    sup_afs.add_argument("--seat-id", dest="seat_id", required=True)
-
-    sup_afses = sup_sub.add_parser(
-        "abandon-for-session",
-        help="Abandon every active thread touching a session (either side)",
-    )
-    sup_afses.add_argument("--agent-session-id", dest="agent_session_id", required=True)
-
-    sup_sub.add_parser(
-        "list-active", help="List every supervision_thread whose status is active"
-    )
 
     # config — enforcement toggle authority (DEC-CONFIG-AUTHORITY-001)
     config_p = subparsers.add_parser(
@@ -7909,41 +3460,34 @@ def main(argv: Sequence[str] | None = None) -> int:
     # init is a backward-compat alias for schema ensure
     if args.domain == "init":
         conn = _get_conn()
+        status = schema_status(conn)
         conn.close()
-        return _ok({"message": "schema ensured"})
+        return _ok({"message": "schema ensured", **status})
 
+    if args.domain == "doctor":
+        return _handle_doctor(args)
+    if args.domain == "prompt":
+        return _handle_prompt(args)
+    if args.domain == "install":
+        return _handle_install(args)
     if args.domain == "schema":
         return _handle_schema(args)
+    if args.domain == "proof":
+        return _handle_proof(args)
     if args.domain == "evaluation":
         return _handle_evaluation(args)
     if args.domain == "marker":
         return _handle_marker(args)
     if args.domain == "event":
         return _handle_event(args)
-    if args.domain == "hook":
-        return _handle_hook(args)
-    if args.domain == "constitution":
-        return _handle_constitution(args)
-    if args.domain == "decision":
-        return _handle_decision(args)
-    if args.domain == "doc":
-        return _handle_doc(args)
-    if args.domain == "prompt-pack":
-        return _handle_prompt_pack(args)
-    if args.domain == "shadow":
-        return _handle_shadow(args)
     if args.domain == "worktree":
         return _handle_worktree(args)
+    if args.domain == "stage":
+        return _handle_stage(args)
     if args.domain == "lifecycle":
         return _handle_lifecycle(args)
     if args.domain == "dispatch":
         return _handle_dispatch(args)
-    if args.domain == "agent-session":
-        return _handle_agent_session(args)
-    if args.domain == "seat":
-        return _handle_seat(args)
-    if args.domain == "supervision":
-        return _handle_supervision(args)
     if args.domain == "statusline":
         return _handle_statusline(args)
     if args.domain == "trace":
@@ -7958,34 +3502,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_sidecar(args)
     if args.domain == "bug":
         return _handle_bug(args)
-    if args.domain == "issue":
-        return _handle_issue(args)
     if args.domain == "approval":
         return _handle_approval(args)
     if args.domain == "lease":
         return _handle_lease(args)
     if args.domain == "completion":
         return _handle_completion(args)
-    if args.domain == "critic-review":
-        return _handle_critic_review(args)
-    if args.domain == "critic-run":
-        return _handle_critic_run(args)
-    if args.domain == "critic":
-        return _handle_critic(args)
-    if args.domain == "session-activity":
-        return _handle_session_activity(args)
-    if args.domain == "enforcement-gap":
-        return _handle_enforcement_gap(args)
-    if args.domain == "lint-state":
-        return _handle_lint_state(args)
-    if args.domain == "preserved-context":
-        return _handle_preserved_context(args)
     if args.domain == "test-state":
         return _handle_test_state(args)
-    if args.domain == "admission":
-        return _handle_admission(args)
-    if args.domain == "scratchlane":
-        return _handle_scratchlane(args)
     if args.domain == "eval":
         return _handle_eval(args)
     if args.domain == "evaluate":

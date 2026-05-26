@@ -6,18 +6,11 @@
 # @title Test canonical flow suggestions from post-task.sh
 # @status accepted
 # @rationale post-task.sh must emit the correct next-role suggestion for each
-#   agent type in the canonical flow
-#   (planner → guardian(provision) → implementer → reviewer → guardian(merge)).
+#   agent type in the canonical flow (planner→implementer→tester→guardian).
 #   The guardian case must produce no suggestion (cycle complete). Events must
 #   be recorded in SQLite for each completion. These tests exercise the actual
 #   production sequence: synthetic hook JSON → post-task.sh → cc-policy SQLite
 #   → verified db state.
-#
-#   Phase 8 Slice 11 retired the legacy ``tester`` role. Test 3 now pins the
-#   unknown-role silent-exit invariant (DEC-PHASE8-SLICE11-001): a stop event
-#   carrying ``agent_type="tester"`` must not produce a PROCESS ERROR or any
-#   routing suggestion — ``dispatch_engine._known_types`` excludes ``tester``
-#   and ``process_agent_stop`` returns silently.
 set -euo pipefail
 
 TEST_NAME="test-post-task"
@@ -56,69 +49,9 @@ run_hook() {
           CLAUDE_RUNTIME_ROOT="$RUNTIME_ROOT" "$HOOK" 2>/dev/null
 }
 
-seed_planner_happy_path() {
-    PYTHONPATH="$REPO_ROOT" python3 - "$TEST_DB" "$TMP_DIR" <<'PYEOF'
-import sqlite3, sys
-from runtime.core import completions, decision_work_registry as dwr, leases
-from runtime.schemas import ensure_schema
-
-db_path, project_root = sys.argv[1], sys.argv[2]
-workflow_id = "wf-post-task-planner"
-
-conn = sqlite3.connect(db_path)
-conn.row_factory = sqlite3.Row
-ensure_schema(conn)
-dwr.insert_goal(
-    conn,
-    dwr.GoalRecord(
-        goal_id=workflow_id,
-        desired_end_state="Planner post-task test",
-        status="active",
-        autonomy_budget=5,
-    ),
-)
-lease = leases.issue(
-    conn,
-    role="planner",
-    workflow_id=workflow_id,
-    worktree_path=project_root,
-)
-completions.submit(
-    conn,
-    lease_id=lease["lease_id"],
-    workflow_id=workflow_id,
-    role="planner",
-    payload={"PLAN_VERDICT": "next_work_item", "PLAN_SUMMARY": "test"},
-)
-conn.close()
-PYEOF
-}
-
-disable_implementer_critic() {
-    PYTHONPATH="$REPO_ROOT" python3 - "$TEST_DB" "$TMP_DIR" <<'PYEOF'
-import sqlite3, sys
-from runtime.core import enforcement_config
-from runtime.schemas import ensure_schema
-
-db_path, project_root = sys.argv[1], sys.argv[2]
-conn = sqlite3.connect(db_path)
-conn.row_factory = sqlite3.Row
-ensure_schema(conn)
-enforcement_config.set_(
-    conn,
-    "critic_enabled_implementer_stop",
-    "false",
-    scope=f"project={project_root}",
-    actor_role="planner",
-)
-conn.close()
-PYEOF
-}
-
 # -----------------------------------------------------------------------
-# Test 1: planner completion → suggests guardian
+# Test 1: legacy planner completion → suggests guardian provision in v6-era routing
 # -----------------------------------------------------------------------
-seed_planner_happy_path
 output=$(run_hook "planner") || true
 if ! echo "$output" | jq '.' >/dev/null 2>&1; then
     echo "  FAIL: planner — output is not valid JSON (got: $output)"
@@ -132,49 +65,33 @@ else
 fi
 
 # -----------------------------------------------------------------------
-# Test 2: implementer completion → suggests reviewer
+# Test 2: implementer completion → suggests tester
 # -----------------------------------------------------------------------
-disable_implementer_critic
 output=$(run_hook "implementer") || true
 if ! echo "$output" | jq '.' >/dev/null 2>&1; then
     echo "  FAIL: implementer — output is not valid JSON (got: $output)"
     FAILURES=$((FAILURES + 1))
 else
     ctx=$(echo "$output" | jq -r '.hookSpecificOutput.additionalContext // empty')
-    if [[ "$ctx" != *"reviewer"* ]]; then
-        echo "  FAIL: implementer — expected 'reviewer' in additionalContext, got: $ctx"
+    if [[ "$ctx" != *"tester"* ]]; then
+        echo "  FAIL: implementer — expected 'tester' in additionalContext, got: $ctx"
         FAILURES=$((FAILURES + 1))
     fi
 fi
 
 # -----------------------------------------------------------------------
-# Test 3: retired tester agent_type → unknown-role silent exit
-# (Phase 8 Slice 11 / DEC-PHASE8-SLICE11-001)
-#
-# Prior to Slice 11 this case asserted PROCESS ERROR when a tester stop
-# arrived without an active lease. Slice 11 removed ``tester`` from
-# ``dispatch_engine._known_types``, so the hook now returns silently: no
-# PROCESS ERROR, no next-role suggestion, no additionalContext routing hint.
-# post-task.sh is allowed to emit diagnostic chatter but must not claim a
-# routing decision or error.
+# Test 3: tester completion with NO active lease → PROCESS ERROR (TKT-STAB-A2)
+# The eval_state fallback has been removed. A tester without a lease must
+# produce a PROCESS ERROR, not silently route to guardian.
 # -----------------------------------------------------------------------
 output=$(run_hook "tester") || true
 if ! echo "$output" | jq '.' >/dev/null 2>&1; then
-    # Empty stdout is acceptable for unknown-role silent exit.
-    if [[ -z "$output" ]]; then
-        : # pass — silent exit
-    else
-        echo "  FAIL: tester (unknown role) — output is not valid JSON and not empty (got: $output)"
-        FAILURES=$((FAILURES + 1))
-    fi
+    echo "  FAIL: tester (no lease) — output is not valid JSON (got: $output)"
+    FAILURES=$((FAILURES + 1))
 else
     ctx=$(echo "$output" | jq -r '.hookSpecificOutput.additionalContext // empty')
-    if [[ "$ctx" == *"PROCESS ERROR"* ]]; then
-        echo "  FAIL: tester (unknown role) — must not emit PROCESS ERROR after Slice 11, got: $ctx"
-        FAILURES=$((FAILURES + 1))
-    fi
-    if [[ "$ctx" == AUTO_DISPATCH:* ]]; then
-        echo "  FAIL: tester (unknown role) — must not emit AUTO_DISPATCH routing, got: $ctx"
+    if [[ "$ctx" != *"PROCESS ERROR"* ]]; then
+        echo "  FAIL: tester (no lease) — expected PROCESS ERROR in additionalContext, got: $ctx"
         FAILURES=$((FAILURES + 1))
     fi
 fi

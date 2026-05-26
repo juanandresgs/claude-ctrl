@@ -78,9 +78,9 @@ provision_db
 # Emit a handful of mixed metrics to give the analysis something to work with
 obs_cli emit agent_duration_s 12.5 --role implementer >/dev/null
 obs_cli emit agent_duration_s 14.0 --role implementer >/dev/null
-obs_cli emit agent_duration_s 10.0 --role reviewer >/dev/null
-obs_cli emit test_result 1.0 --role reviewer >/dev/null
-obs_cli emit test_result 0.0 --role reviewer >/dev/null
+obs_cli emit agent_duration_s 10.0 --role tester >/dev/null
+obs_cli emit test_result 1.0 --role tester >/dev/null
+obs_cli emit test_result 0.0 --role tester >/dev/null
 obs_cli emit eval_verdict 1.0 >/dev/null
 
 summary_out=$(obs_cli summary)
@@ -205,7 +205,7 @@ provision_db
 
 # Seed a few metrics so generate_report has something to work with
 obs_cli emit agent_duration_s 5.0 --role implementer >/dev/null
-obs_cli emit test_result 1.0 --role reviewer >/dev/null
+obs_cli emit test_result 1.0 --role tester >/dev/null
 
 sidecar_out=$(CLAUDE_POLICY_DB="$TEST_DB" python3 "$SIDECAR" 2>/dev/null)
 
@@ -219,9 +219,8 @@ else
     (( FAIL++ )) || true
 fi
 
-# Verify legacy keys still present. proof_count was removed with
-# DEC-CATEGORY-C-PROOF-RETIRE-001.
-for key in name observed_at health active_agents pending_dispatches worktree_count recent_event_count; do
+# Verify legacy keys still present
+for key in name observed_at health proof_count active_agents; do
     val=$(printf '%s' "$sidecar_out" | jq --arg k "$key" 'has($k)' 2>/dev/null || echo "false")
     if [[ "$val" == "true" ]]; then
         echo "PASS: $TEST_NAME — scenario 4: sidecar report has legacy key '$key'"
@@ -255,7 +254,7 @@ provision_db
 
 # Seed some data first
 obs_cli emit agent_duration_s 7.0 --role implementer >/dev/null
-obs_cli emit agent_duration_s 9.0 --role reviewer >/dev/null
+obs_cli emit agent_duration_s 9.0 --role tester >/dev/null
 obs_cli suggest perf "test suggestion" >/dev/null
 
 metrics_before=$(row_count obs_metrics)

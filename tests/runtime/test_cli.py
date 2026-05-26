@@ -31,14 +31,9 @@ _WORKTREE = Path(__file__).resolve().parent.parent.parent
 _CLI = str(_WORKTREE / "runtime" / "cli.py")
 
 
-def run(args: list[str], db_path: str, extra_env: dict[str, str] | None = None) -> tuple[int, dict]:
+def run(args: list[str], db_path: str) -> tuple[int, dict]:
     """Run cc-policy with the given args, return (exit_code, parsed_json)."""
-    env = {
-        **os.environ,
-        "CLAUDE_POLICY_DB": db_path,
-        "PYTHONPATH": str(_WORKTREE),
-        **(extra_env or {}),
-    }
+    env = {**os.environ, "CLAUDE_POLICY_DB": db_path, "PYTHONPATH": str(_WORKTREE)}
     result = subprocess.run(
         [sys.executable, _CLI] + args,
         capture_output=True,
@@ -77,458 +72,41 @@ def test_init_alias(db):
     assert out["status"] == "ok"
 
 
-def test_issue_file_cli_routes_through_capture_authority(db, tmp_path):
-    todo_sh = tmp_path / "todo.sh"
-    todo_sh.write_text("#!/usr/bin/env bash\necho 'https://github.com/org/repo/issues/55'\n")
-    todo_sh.chmod(0o755)
-
-    code, out = run(
-        [
-            "issue",
-            "file",
-            "--kind",
-            "follow_up",
-            "--scope",
-            "project",
-            "--title",
-            "cli follow-up",
-            "--body",
-            "body",
-            "--project-root",
-            str(tmp_path),
-        ],
-        db,
-        extra_env={"CLAUDE_TODO_SH": str(todo_sh)},
-    )
-
-    assert code == 0, out
-    assert out["disposition"] == "filed"
-    assert out["scope"] == "project"
-    assert out["issue_url"] == "https://github.com/org/repo/issues/55"
-
-    code, listed = run(["issue", "list"], db)
-    assert code == 0, listed
-    assert listed["count"] == 1
-    assert listed["items"][0]["title"] == "cli follow-up"
-
-
 # ---------------------------------------------------------------------------
-# Critic review
+# Proof
 # ---------------------------------------------------------------------------
 
 
-def test_critic_review_submit_and_latest(db):
-    code, out = run(
-        [
-            "critic-review",
-            "submit",
-            "--workflow-id",
-            "wf-cli-critic-001",
-            "--lease-id",
-            "lease-cli-001",
-            "--verdict",
-            "TRY_AGAIN",
-            "--summary",
-            "Need one more pass.",
-            "--detail",
-            "Coverage is still missing on the main path.",
-            "--fingerprint",
-            "fp-cli-001",
-            "--metadata",
-            '{"hook":"cli-test"}',
-        ],
-        db,
-    )
-    assert code == 0, out
-    assert out["verdict"] == "TRY_AGAIN"
-    assert out["resolution"]["next_role"] == "implementer"
-    assert out["metadata"]["hook"] == "cli-test"
-
-    code, latest = run(
-        ["critic-review", "latest", "--workflow-id", "wf-cli-critic-001"],
-        db,
-    )
-    assert code == 0, latest
-    assert latest["workflow_id"] == "wf-cli-critic-001"
-    assert latest["lease_id"] == "lease-cli-001"
-    assert latest["verdict"] == "TRY_AGAIN"
+def test_proof_get_missing(db):
+    code, out = run(["proof", "get", "wf-x"], db)
+    assert code == 0
+    # proof get returns status="idle" (the proof status) when not found,
+    # not status="ok" — "ok" is the envelope default but proof status wins
+    assert out["found"] is False
+    assert out["workflow_id"] == "wf-x"
+    # status field reflects proof status ("idle"), not envelope status
+    assert out["status"] == "idle"
 
 
-def test_critic_run_lifecycle_and_metrics_cli(db):
-    code, started = run(
-        [
-            "critic-run",
-            "start",
-            "--workflow-id",
-            "wf-cli-critic-run-001",
-            "--lease-id",
-            "lease-cli-run-001",
-            "--provider",
-            "codex",
-        ],
-        db,
-    )
-    assert code == 0, started
-    assert started["status"] == "started"
-    run_id = started["run_id"]
+def test_proof_set_and_get(db):
+    code, out = run(["proof", "set", "wf-1", "pending"], db)
+    assert code == 0
+    # proof set returns the new status as the "status" field
+    assert out["workflow_id"] == "wf-1"
+    assert out["status"] == "pending"
 
-    code, progressed = run(
-        [
-            "critic-run",
-            "progress",
-            "--run-id",
-            run_id,
-            "--message",
-            "Provider status: codex ready.",
-            "--phase",
-            "provider",
-            "--status",
-            "provider_ready",
-        ],
-        db,
-    )
-    assert code == 0, progressed
-    assert progressed["status"] == "provider_ready"
-
-    code, completed = run(
-        [
-            "critic-run",
-            "complete",
-            "--run-id",
-            run_id,
-            "--verdict",
-            "READY_FOR_REVIEWER",
-            "--summary",
-            "Ready for reviewer.",
-            "--metrics",
-            '{"try_again_streak":0,"retry_limit":2}',
-        ],
-        db,
-    )
-    assert code == 0, completed
-    assert completed["status"] == "completed"
-    assert completed["verdict"] == "READY_FOR_REVIEWER"
-
-    code, latest = run(
-        ["critic-run", "latest", "--workflow-id", "wf-cli-critic-run-001"],
-        db,
-    )
-    assert code == 0, latest
-    assert latest["found"] is True
-    assert latest["run_id"] == run_id
-
-    code, metrics = run(
-        ["critic-run", "metrics", "--workflow-id", "wf-cli-critic-run-001"],
-        db,
-    )
-    assert code == 0, metrics
-    assert metrics["total_runs"] == 1
-    assert metrics["ready_for_reviewer"] == 1
-    assert metrics["loopback_rate"] == 0.0
+    code, out = run(["proof", "get", "wf-1"], db)
+    assert code == 0
+    assert out["status"] == "pending"
+    assert out["found"] is True
 
 
-# ---------------------------------------------------------------------------
-# Session activity / enforcement gaps
-# ---------------------------------------------------------------------------
-
-
-def test_session_activity_tracks_prompts_and_changed_files_in_db(db, tmp_path):
-    project = tmp_path / "project"
-    project.mkdir()
-    changed = project / "src" / "app.ts"
-    changed.parent.mkdir()
-    changed.write_text("export const x = 1;\n")
-
-    code, first = run(
-        [
-            "session-activity",
-            "prompt",
-            "--project-root",
-            str(project),
-            "--session-id",
-            "sess-cli-001",
-        ],
-        db,
-    )
-    assert code == 0, first
-    assert first["prompt_count"] == 1
-
-    code, second = run(
-        [
-            "session-activity",
-            "prompt",
-            "--project-root",
-            str(project),
-            "--session-id",
-            "sess-cli-001",
-        ],
-        db,
-    )
-    assert code == 0, second
-    assert second["prompt_count"] == 2
-
-    code, recorded = run(
-        [
-            "session-activity",
-            "change-record",
-            "--project-root",
-            str(project),
-            "--session-id",
-            "sess-cli-001",
-            "--file-path",
-            str(changed),
-        ],
-        db,
-    )
-    assert code == 0, recorded
-    assert recorded["count"] == 1
-    assert recorded["items"][0]["file_path"] == str(changed.resolve())
-
-    code, listed = run(
-        [
-            "session-activity",
-            "change-list",
-            "--project-root",
-            str(project),
-            "--session-id",
-            "sess-cli-001",
-        ],
-        db,
-    )
-    assert code == 0, listed
-    assert listed["count"] == 1
-
-
-def test_enforcement_gap_cli_records_counts_and_clears(db, tmp_path):
-    project = tmp_path / "project"
-    project.mkdir()
-
-    for _ in range(2):
-        code, out = run(
-            [
-                "enforcement-gap",
-                "record",
-                "--project-root",
-                str(project),
-                "--gap-type",
-                "unsupported",
-                "--ext",
-                "java",
-                "--tool",
-                "none",
-            ],
-            db,
-        )
-        assert code == 0, out
-
-    code, counted = run(
-        [
-            "enforcement-gap",
-            "count",
-            "--project-root",
-            str(project),
-            "--gap-type",
-            "unsupported",
-            "--ext",
-            "java",
-        ],
-        db,
-    )
-    assert code == 0, counted
-    assert counted["count"] == 2
-
-    code, listed = run(["enforcement-gap", "list", "--project-root", str(project)], db)
-    assert code == 0, listed
-    assert listed["count"] == 1
-    assert listed["items"][0]["ext"] == "java"
-
-    code, cleared = run(
-        [
-            "enforcement-gap",
-            "clear",
-            "--project-root",
-            str(project),
-            "--gap-type",
-            "unsupported",
-            "--ext",
-            "java",
-        ],
-        db,
-    )
-    assert code == 0, cleared
-    assert cleared["cleared"] is True
-
-    code, counted = run(
-        [
-            "enforcement-gap",
-            "count",
-            "--project-root",
-            str(project),
-            "--gap-type",
-            "unsupported",
-            "--ext",
-            "java",
-        ],
-        db,
-    )
-    assert code == 0, counted
-    assert counted["count"] == 0
-
-
-def test_lint_state_cli_stores_cache_and_breaker_in_db(db, tmp_path):
-    project = tmp_path / "project"
-    project.mkdir()
-
-    code, empty = run(
-        [
-            "lint-state",
-            "cache-get",
-            "--project-root",
-            str(project),
-            "--ext",
-            "py",
-            "--config-mtime",
-            "100",
-        ],
-        db,
-    )
-    assert code == 0, empty
-    assert empty["found"] is False
-
-    code, cached = run(
-        [
-            "lint-state",
-            "cache-set",
-            "--project-root",
-            str(project),
-            "--ext",
-            ".py",
-            "--linter",
-            "ruff",
-            "--config-mtime",
-            "100",
-        ],
-        db,
-    )
-    assert code == 0, cached
-    assert cached["linter"] == "ruff"
-
-    code, fresh = run(
-        [
-            "lint-state",
-            "cache-get",
-            "--project-root",
-            str(project),
-            "--ext",
-            "py",
-            "--config-mtime",
-            "100",
-        ],
-        db,
-    )
-    assert code == 0, fresh
-    assert fresh["found"] is True
-    assert fresh["linter"] == "ruff"
-
-    code, stale = run(
-        [
-            "lint-state",
-            "cache-get",
-            "--project-root",
-            str(project),
-            "--ext",
-            "py",
-            "--config-mtime",
-            "101",
-        ],
-        db,
-    )
-    assert code == 0, stale
-    assert stale["found"] is False
-
-    code, breaker = run(
-        [
-            "lint-state",
-            "breaker-set",
-            "--project-root",
-            str(project),
-            "--ext",
-            "py",
-            "--state",
-            "open",
-            "--failure-count",
-            "3",
-            "--updated-at",
-            "123",
-        ],
-        db,
-    )
-    assert code == 0, breaker
-    assert breaker["state"] == "open"
-    assert breaker["failure_count"] == 3
-
-    code, breaker = run(
-        ["lint-state", "breaker-get", "--project-root", str(project), "--ext", "py"],
-        db,
-    )
-    assert code == 0, breaker
-    assert breaker["found"] is True
-    assert breaker["state"] == "open"
-
-
-def test_preserved_context_cli_saves_and_consumes_once(db, tmp_path):
-    project = tmp_path / "project"
-    project.mkdir()
-    env = {"CLAUDE_POLICY_DB": db, "PYTHONPATH": str(_WORKTREE)}
-
-    save = subprocess.run(
-        [
-            sys.executable,
-            _CLI,
-            "preserved-context",
-            "save",
-            "--project-root",
-            str(project),
-            "--session-id",
-            "sess-preserve-001",
-        ],
-        input="Plan: active\nModified this session: app.ts\n",
-        capture_output=True,
-        text=True,
-        env=env,
-    )
-    assert save.returncode == 0, save.stderr
-    saved = json.loads(save.stdout)
-    assert saved["found"] is True
-
-    code, consumed = run(
-        [
-            "preserved-context",
-            "consume",
-            "--project-root",
-            str(project),
-            "--session-id",
-            "sess-preserve-001",
-        ],
-        db,
-    )
-    assert code == 0, consumed
-    assert consumed["found"] is True
-    assert "Modified this session" in consumed["context_text"]
-
-    code, consumed_again = run(
-        [
-            "preserved-context",
-            "consume",
-            "--project-root",
-            str(project),
-            "--session-id",
-            "sess-preserve-001",
-        ],
-        db,
-    )
-    assert code == 0, consumed_again
-    assert consumed_again["found"] is False
+def test_proof_list(db):
+    run(["proof", "set", "wf-a", "idle"], db)
+    run(["proof", "set", "wf-b", "verified"], db)
+    code, out = run(["proof", "list"], db)
+    assert code == 0
+    assert out["count"] == 2
 
 
 # ---------------------------------------------------------------------------
@@ -545,60 +123,6 @@ def test_marker_set_and_get_active(db):
     assert code == 0
     assert out["found"] is True
     assert out["role"] == "implementer"
-
-
-def test_marker_set_without_project_root_defaults_to_resolved_root(db, tmp_path):
-    """A21 regression: `marker set` without --project-root must default to the
-    CLI-resolved project root (args → CLAUDE_PROJECT_DIR env → git toplevel →
-    normalize_path) so a subsequent scoped `marker get-active --project-root`
-    query finds the marker.
-
-    Pre-A21: set stored project_root=NULL, and get-active --project-root=<X>
-    returned found=False because NULL did not match equality against X. This
-    surfaced in A19R when the orchestrator's guardian marker was silently
-    invisible to the lease-visibility path until re-set with an explicit flag.
-
-    Post-A21: omitting --project-root picks up CLAUDE_PROJECT_DIR (the canonical
-    session root), so the scoped lookup matches deterministically.
-    """
-    from runtime.core.policy_utils import normalize_path
-
-    fake_root = str(tmp_path / "fake-proj")
-    os.makedirs(fake_root, exist_ok=True)
-    normalized = normalize_path(fake_root)
-
-    # Emulate a normal repo session: CLAUDE_PROJECT_DIR is set.
-    env = {
-        **os.environ,
-        "CLAUDE_POLICY_DB": db,
-        "PYTHONPATH": str(_WORKTREE),
-        "CLAUDE_PROJECT_DIR": fake_root,
-    }
-
-    # marker set without --project-root
-    result = subprocess.run(
-        [sys.executable, _CLI, "marker", "set", "agent-noroot", "guardian"],
-        capture_output=True, text=True, env=env,
-    )
-    assert result.returncode == 0, result.stderr
-
-    # Scoped get-active under the resolved root must find the marker.
-    result = subprocess.run(
-        [sys.executable, _CLI, "marker", "get-active", "--project-root", normalized],
-        capture_output=True, text=True, env=env,
-    )
-    assert result.returncode == 0, result.stderr
-    data = json.loads(result.stdout.strip())
-    assert data.get("found") is True, (
-        f"scoped get-active must find the marker persisted with defaulted "
-        f"project_root; got {data!r}"
-    )
-    assert data.get("agent_id") == "agent-noroot"
-    assert data.get("role") == "guardian"
-    assert data.get("project_root") == normalized, (
-        f"marker row must carry the defaulted project_root, not NULL; got "
-        f"{data.get('project_root')!r}"
-    )
 
 
 def test_marker_deactivate(db):
@@ -677,18 +201,37 @@ def test_worktree_register_list_remove(db):
 
 
 def test_dispatch_full_lifecycle(db):
-    legacy_actions = (
-        "enqueue",
-        "next",
-        "start",
-        "complete",
-        "cycle-start",
-        "cycle-current",
-    )
-    for action in legacy_actions:
-        code, out = run(["dispatch", action, "--help"], db)
-        assert code != 0
-        assert f"invalid choice: '{action}'" in out["_raw"]
+    # Start a cycle
+    code, out = run(["dispatch", "cycle-start", "INIT-002"], db)
+    assert code == 0
+    _ = out["id"]
+
+    # current-cycle returns it
+    code, out = run(["dispatch", "cycle-current"], db)
+    assert out["found"] is True
+    assert out["initiative"] == "INIT-002"
+
+    # Enqueue an item
+    code, out = run(["dispatch", "enqueue", "implementer", "--ticket", "TKT-6"], db)
+    assert code == 0
+    qid = out["id"]
+
+    # v6 dispatch authority no longer falls back to legacy queue.
+    code, out = run(["dispatch", "next"], db)
+    assert out["found"] is False
+    assert out["authority"] == "v6_stage_machine"
+
+    # start it
+    code, out = run(["dispatch", "start", str(qid)], db)
+    assert code == 0
+
+    # next now empty
+    code, out = run(["dispatch", "next"], db)
+    assert out["found"] is False
+
+    # complete it
+    code, out = run(["dispatch", "complete", str(qid)], db)
+    assert code == 0
 
 
 # ---------------------------------------------------------------------------
@@ -698,6 +241,7 @@ def test_dispatch_full_lifecycle(db):
 
 def test_statusline_snapshot_keys(db):
     # Populate some state
+    run(["proof", "set", "wf-1", "verified"], db)
     run(["marker", "set", "agent-1", "implementer"], db)
     run(["worktree", "register", "/wt/a", "feature/a"], db)
 
@@ -734,19 +278,16 @@ def test_statusline_snapshot_empty_db(db):
 # ---------------------------------------------------------------------------
 
 
-def test_statusline_snapshot_latency_under_300ms(db):
-    """cc-policy statusline snapshot should stay sub-300ms on a warm DB."""
-    run(["marker", "set", "agent-lat", "implementer"], db)
+@pytest.mark.xfail(reason="subprocess latency is environment-sensitive")
+def test_proof_get_latency_under_200ms(db):
+    """cc-policy proof get must complete in under 200ms on a warm DB."""
+    # Warm up: ensure schema exists
+    run(["proof", "set", "wf-lat", "idle"], db)
 
-    samples = []
-    for _ in range(3):
-        start = time.perf_counter()
-        code, out = run(["statusline", "snapshot"], db)
-        samples.append((time.perf_counter() - start) * 1000)
-        assert code == 0
-        assert out["status"] == "ok"
+    start = time.perf_counter()
+    code, out = run(["proof", "get", "wf-lat"], db)
+    elapsed_ms = (time.perf_counter() - start) * 1000
 
-    elapsed_ms = min(samples)
-    formatted = ", ".join(f"{sample:.1f}ms" for sample in samples)
-    print(f"\n  statusline snapshot latency samples: {formatted}; best={elapsed_ms:.1f}ms")
-    assert elapsed_ms < 300, f"best latency {elapsed_ms:.1f}ms exceeds 300ms threshold"
+    assert code == 0
+    print(f"\n  proof get latency: {elapsed_ms:.1f}ms")
+    assert elapsed_ms < 200, f"latency {elapsed_ms:.1f}ms exceeds 200ms threshold"

@@ -32,15 +32,13 @@ from __future__ import annotations
 
 from typing import Optional
 
-from runtime.core.authority_registry import CAN_PROVISION_WORKTREE
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
 
 
 def check(request: PolicyRequest) -> Optional[PolicyDecision]:
-    """Deny `git worktree add` from actors lacking CAN_PROVISION_WORKTREE.
+    """Deny `git worktree add` when the current role is not guardian.
 
-    Actors with CAN_PROVISION_WORKTREE (guardian:provision and the live
-    "guardian" alias) are exempt — they ARE the worktree lifecycle authority.
+    Guardian is exempt because it is the sole worktree lifecycle authority.
     All other roles must receive a provisioned worktree via the dispatch chain
     (planner -> guardian(provision) -> implementer).
 
@@ -64,20 +62,20 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     if not is_worktree_add:
         return None
 
-    # Guardian (both provision mode and the live "guardian" alias) carries
-    # CAN_PROVISION_WORKTREE — the sole worktree lifecycle authority.
-    if CAN_PROVISION_WORKTREE in request.context.capabilities:
+    # Guardian is the sole worktree lifecycle authority — exempt.
+    actor_role = request.context.actor_role or ""
+    if actor_role == "guardian":
         return None
 
     return PolicyDecision(
         action="deny",
         reason=(
             "Worktree creation is reserved for Guardian. "
-            "Use the dispatch chain: the orchestrator dispatches Guardian in "
-            "provision mode (`AUTO_DISPATCH: guardian (mode=provision, ...)`), "
-            "Guardian runs `cc-policy worktree provision`, and the resulting "
-            "worktree_path is passed to the implementer via AUTO_DISPATCH. "
-            "Do NOT run `git worktree add` directly."
+            "Launch Guardian naturally with provisioning capability; Guardian runs "
+            "`cc-policy worktree provision`, which creates the worktree, records "
+            "workflow binding, and issues the scoped leases. Then launch "
+            "implementer as an ordinary Agent with no isolation flag. Do NOT "
+            "run `git worktree add` directly."
         ),
         policy_name="bash_worktree_creation",
     )

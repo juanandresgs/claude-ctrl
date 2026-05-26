@@ -105,14 +105,13 @@ def test_expired_lease_denied():
 
 
 def test_op_in_blocked_ops_denied():
-    # Use a non-landing high_risk op (rebase) so the CAN_LAND_GIT gate
-    # doesn't fire first. Push would hit the landing gate before blocked_ops.
+    # classify_git_op("git push ...") returns "high_risk" — use the real op_class.
     lease = _make_lease(
         allowed_ops=["routine_local", "high_risk"],
         blocked_ops=["high_risk"],
     )
-    ctx = make_context(actor_role="guardian:land", lease=lease)
-    req = make_request("git rebase main", context=ctx)
+    ctx = make_context(lease=lease)
+    req = make_request("git push origin feature/foo", context=ctx)
     decision = check(req)
     assert decision is not None
     assert decision.action == "deny"
@@ -125,11 +124,10 @@ def test_op_in_blocked_ops_denied():
 
 
 def test_op_not_in_allowed_ops_denied():
-    # Use a non-landing high_risk op (rebase) so the CAN_LAND_GIT gate
-    # doesn't fire first.
     lease = _make_lease(allowed_ops=["routine_local"])
-    ctx = make_context(actor_role="guardian:land", lease=lease)
-    req = make_request("git rebase main", context=ctx)
+    ctx = make_context(lease=lease)
+    # push is classified as high_risk / push, not routine_local
+    req = make_request("git push origin feature/bar", context=ctx)
     decision = check(req)
     assert decision is not None
     assert decision.action == "deny"
@@ -141,19 +139,18 @@ def test_op_not_in_allowed_ops_denied():
 # ---------------------------------------------------------------------------
 
 
-def test_commit_with_valid_lease_allowed_for_guardian_land():
+def test_commit_with_valid_lease_allowed():
     lease = _make_lease(allowed_ops=["routine_local"])
-    lease["role"] = "guardian"
-    ctx = make_context(actor_role="guardian:land", lease=lease)
+    ctx = make_context(lease=lease)
     req = make_request("git commit -m 'feat: add thing'", context=ctx)
     decision = check(req)
     assert decision is None
 
 
-def test_push_allowed_for_guardian_land():
+def test_push_allowed_when_in_allowed_ops():
+    # classify_git_op("git push ...") returns "high_risk" — include that class.
     lease = _make_lease(allowed_ops=["routine_local", "high_risk"])
-    lease["role"] = "guardian"
-    ctx = make_context(actor_role="guardian:land", lease=lease)
+    ctx = make_context(lease=lease)
     req = make_request("git push origin feature/done", context=ctx)
     decision = check(req)
     assert decision is None
@@ -218,300 +215,3 @@ def test_nested_shell_git_push_still_denied_without_lease():
     assert decision is not None
     assert decision.action == "deny"
     assert decision.policy_name == "bash_git_who"
-
-
-# ---------------------------------------------------------------------------
-# Phase 3: READ_ONLY_REVIEW capability gate
-# ---------------------------------------------------------------------------
-
-
-def test_reviewer_read_only_denies_git_commit_even_with_valid_lease():
-    """Reviewer with READ_ONLY_REVIEW capability is denied git commit
-    even when a lease with routine_local is present."""
-    lease = _make_lease(allowed_ops=["routine_local"])
-    lease["role"] = "reviewer"
-    ctx = make_context(actor_role="reviewer", lease=lease)
-    req = make_request("git commit -m 'should not happen'", context=ctx)
-    decision = check(req)
-    assert decision is not None
-    assert decision.action == "deny"
-    assert "read-only" in decision.reason.lower()
-    assert decision.policy_name == "bash_git_who"
-
-
-def test_reviewer_read_only_denies_git_merge():
-    """Reviewer is denied git merge regardless of lease."""
-    lease = _make_lease(allowed_ops=["routine_local"])
-    lease["role"] = "reviewer"
-    ctx = make_context(actor_role="reviewer", lease=lease)
-    req = make_request("git merge feature/foo", context=ctx)
-    decision = check(req)
-    assert decision is not None
-    assert decision.action == "deny"
-    assert "read-only" in decision.reason.lower()
-
-
-def test_reviewer_read_only_denies_git_push():
-    """Reviewer is denied git push even with a permissive lease."""
-    lease = _make_lease(allowed_ops=["routine_local", "high_risk"])
-    lease["role"] = "reviewer"
-    ctx = make_context(actor_role="reviewer", lease=lease)
-    req = make_request("git push origin main", context=ctx)
-    decision = check(req)
-    assert decision is not None
-    assert decision.action == "deny"
-    assert "read-only" in decision.reason.lower()
-
-
-def test_arbitrary_role_with_read_only_review_injected_is_denied():
-    """The gate keys off READ_ONLY_REVIEW capability, not the role string.
-    An arbitrary role name with the capability injected must be denied."""
-    from runtime.core.authority_registry import (
-        CAN_EMIT_DISPATCH_TRANSITION,
-        READ_ONLY_REVIEW,
-    )
-    from runtime.core.policy_engine import PolicyContext
-
-    lease = _make_lease(allowed_ops=["routine_local"])
-    lease["role"] = "custom_auditor"
-    ctx = PolicyContext(
-        actor_role="custom_auditor",
-        actor_id="agent-test",
-        workflow_id="feature-test",
-        worktree_path="/project/.worktrees/feature-test",
-        branch="feature/test",
-        project_root="/project",
-        is_meta_repo=False,
-        lease=lease,
-        scope=None,
-        eval_state=None,
-        test_state=None,
-        binding=None,
-        dispatch_phase=None,
-        capabilities=frozenset({READ_ONLY_REVIEW, CAN_EMIT_DISPATCH_TRANSITION}),
-    )
-    req = make_request("git commit -m 'audit trail'", context=ctx)
-    decision = check(req)
-    assert decision is not None
-    assert decision.action == "deny"
-    assert "read-only" in decision.reason.lower()
-
-
-def test_implementer_branch_commit_allowed_with_work_item_grant():
-    """Implementer may make checkpoint commits on its scoped branch when the
-    work-item grant allows branch commits."""
-    lease = _make_lease(allowed_ops=["routine_local"])
-    lease["role"] = "implementer"
-    lease["worktree_path"] = "/project/.worktrees/feature-test"
-    ctx = make_context(
-        actor_role="implementer",
-        lease=lease,
-        project_root="/project/.worktrees/feature-test",
-        work_item_id="wi-test",
-        landing_grant={
-            "work_item_id": "wi-test",
-            "workflow_id": "feature-test",
-            "can_commit_branch": True,
-            "can_autoland": True,
-            "merge_strategy": "no_ff",
-            "requires_user_approval": [],
-        },
-    )
-    req = make_request("git commit -m 'feat: add thing'", context=ctx)
-    decision = check(req)
-    assert decision is None
-
-
-def test_implementer_branch_commit_denied_without_work_item_grant():
-    lease = _make_lease(allowed_ops=["routine_local"])
-    lease["role"] = "implementer"
-    lease["worktree_path"] = "/project/.worktrees/feature-test"
-    ctx = make_context(
-        actor_role="implementer",
-        lease=lease,
-        project_root="/project/.worktrees/feature-test",
-        work_item_id="wi-test",
-        landing_grant=None,
-    )
-    req = make_request("git commit -m 'feat: add thing'", context=ctx)
-    decision = check(req)
-    assert decision is not None
-    assert decision.action == "deny"
-    assert "can_land_git" in decision.reason.lower()
-
-
-def test_meta_repo_bypass_unaffected_by_read_only():
-    """Meta-repo bypass fires before the READ_ONLY_REVIEW check —
-    reviewer in meta-repo is not denied."""
-    ctx = make_context(actor_role="reviewer", is_meta_repo=True, lease=None)
-    req = make_request("git commit -m 'config update'", context=ctx)
-    decision = check(req)
-    assert decision is None
-
-
-def test_reviewer_non_git_command_still_skipped():
-    """READ_ONLY_REVIEW gate only fires for classified git ops.
-    Non-git commands are skipped regardless of capability."""
-    ctx = make_context(actor_role="reviewer", lease=None)
-    req = make_request("ls -la", context=ctx)
-    decision = check(req)
-    assert decision is None
-
-
-def test_reviewer_git_status_still_skipped():
-    """git status is classified as 'unclassified' — skipped before
-    READ_ONLY_REVIEW gate fires."""
-    ctx = make_context(actor_role="reviewer", lease=None)
-    req = make_request("git status", context=ctx)
-    decision = check(req)
-    assert decision is None
-
-
-# ---------------------------------------------------------------------------
-# DEC-PE-GIT-WHO-LEASE-DENY-DIAG-001
-# Distinguish "no lease exists" from "lease exists but not attachable".
-#
-# All three branches below DENY — diagnostic classification only; enforcement
-# is unchanged.  The tests pin the distinct wording so operators cannot mistake
-# one remediation class for the other.
-# ---------------------------------------------------------------------------
-
-
-def test_no_lease_and_no_suppressed_roles_uses_original_wording():
-    """Truly no lease anywhere on the worktree — original 'issue-for-dispatch'
-    remediation text applies."""
-    ctx = make_context(
-        actor_role="implementer",
-        lease=None,
-        worktree_lease_suppressed_roles=frozenset(),
-    )
-    req = make_request("git commit -m 'add feature'", context=ctx)
-    decision = check(req)
-    assert decision is not None
-    assert decision.action == "deny"
-    assert decision.policy_name == "bash_git_who"
-    # Original wording fragments preserved.
-    assert "No active dispatch lease" in decision.reason
-    assert "issue-for-dispatch" in decision.reason
-    # Must NOT claim a lease exists — there isn't one in this scenario.
-    assert "Active lease(s)" not in decision.reason
-    # Effect preserved (expire_stale_leases sweep).
-    assert decision.effects is not None
-    assert decision.effects.get("expire_stale_leases") is True
-
-
-def test_no_lease_but_worktree_has_guardian_lease_and_empty_actor_role():
-    """Orchestrator path (actor_role="") with a guardian lease present on the
-    worktree — emit explicit actor-role-unresolved diagnostic naming the
-    suppressed role, and must NOT tell operator to re-issue the lease."""
-    ctx = make_context(
-        actor_role="",
-        lease=None,
-        worktree_lease_suppressed_roles=frozenset({"guardian"}),
-    )
-    req = make_request("git commit -m 'checkpoint'", context=ctx)
-    decision = check(req)
-    assert decision is not None
-    assert decision.action == "deny"
-    assert decision.policy_name == "bash_git_who"
-    # Must name the actual cause — not "missing lease".
-    assert "Active lease(s)" in decision.reason
-    assert "guardian" in decision.reason
-    # Must cite the governing decision so operators can find the rationale.
-    assert "DEC-PE-EGAP-BUILD-CTX-001" in decision.reason
-    # Must steer operators away from the wrong remediation.
-    assert "Do NOT re-issue" in decision.reason
-    # Must distinguish from the real "no lease" message — the literal
-    # original wording must NOT appear here.
-    assert "No active dispatch lease" not in decision.reason
-    # Effect preserved.
-    assert decision.effects is not None
-    assert decision.effects.get("expire_stale_leases") is True
-
-
-def test_no_lease_but_worktree_has_other_role_lease_and_mismatched_actor():
-    """Actor role set (implementer) but worktree only has a guardian lease —
-    emit role-mismatch diagnostic naming both the actor role and the holder
-    role."""
-    ctx = make_context(
-        actor_role="implementer",
-        lease=None,
-        worktree_lease_suppressed_roles=frozenset({"guardian"}),
-    )
-    req = make_request("git commit -m 'impl work'", context=ctx)
-    decision = check(req)
-    assert decision is not None
-    assert decision.action == "deny"
-    assert decision.policy_name == "bash_git_who"
-    assert "Active lease(s)" in decision.reason
-    assert "guardian" in decision.reason
-    assert "'implementer'" in decision.reason
-    # Must NOT be the orchestrator branch.
-    assert "Do NOT re-issue" not in decision.reason
-    # Must NOT be the original "no lease" text.
-    assert "No active dispatch lease" not in decision.reason
-
-
-def test_multiple_suppressed_roles_listed_sorted():
-    """When multiple role leases exist on the worktree, all are listed in
-    sorted order so the diagnostic is deterministic."""
-    ctx = make_context(
-        actor_role="",
-        lease=None,
-        worktree_lease_suppressed_roles=frozenset({"guardian", "implementer"}),
-    )
-    req = make_request("git commit -m 'x'", context=ctx)
-    decision = check(req)
-    assert decision is not None
-    # Sorted alphabetically: guardian, implementer.
-    assert "[guardian, implementer]" in decision.reason
-
-
-def test_suppressed_roles_ignored_when_lease_actually_attached():
-    """When context.lease IS populated, the suppressed-roles field is
-    irrelevant — normal allow/role-check/op-class paths fire.  This guarantees
-    the new diagnostic cannot regress the happy path."""
-    lease = _make_lease(allowed_ops=["routine_local"])
-    lease["role"] = "guardian"
-    ctx = make_context(
-        actor_role="guardian:land",
-        lease=lease,
-        worktree_lease_suppressed_roles=frozenset({"guardian"}),
-    )
-    req = make_request("git commit -m 'landing'", context=ctx)
-    decision = check(req)
-    # Valid lease + guardian:land has CAN_LAND_GIT → allow.
-    assert decision is None
-
-
-def test_multiline_update_ref_is_seen_and_requires_lease():
-    ctx = make_context(actor_role="orchestrator", lease=None)
-    req = make_request(
-        'COMMIT=$(git commit-tree "$TREE" -p "$PARENT")\n'
-        'git update-ref refs/heads/main "$COMMIT"',
-        context=ctx,
-    )
-    decision = check(req)
-    assert decision is not None
-    assert decision.action == "deny"
-    assert "lease" in decision.reason.lower()
-
-
-def test_git_plumbing_requires_guardian_land_capability():
-    lease = _make_lease(allowed_ops=["routine_local", "high_risk"])
-    lease["role"] = "guardian"
-    ctx = make_context(actor_role="guardian:provision", lease=lease)
-    req = make_request("git update-ref refs/heads/main HEAD", context=ctx)
-    decision = check(req)
-    assert decision is not None
-    assert decision.action == "deny"
-    assert "can_land_git" in decision.reason
-
-
-def test_git_plumbing_allowed_by_who_for_guardian_land_then_approval_gate_handles_it():
-    lease = _make_lease(allowed_ops=["routine_local", "high_risk"])
-    lease["role"] = "guardian"
-    ctx = make_context(actor_role="guardian:land", lease=lease)
-    req = make_request("git update-ref refs/heads/main HEAD", context=ctx)
-    decision = check(req)
-    assert decision is None

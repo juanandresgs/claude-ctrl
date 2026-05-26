@@ -13,63 +13,54 @@ source "$(dirname "$0")/log.sh"
 source "$(dirname "$0")/context-lib.sh"
 
 HOOK_INPUT=$(read_input)
-seed_project_dir_from_hook_payload_cwd "$HOOK_INPUT"
 PROMPT=$(echo "$HOOK_INPUT" | jq -r '.prompt // empty' 2>/dev/null)
-HOOK_SESSION_ID=$(echo "$HOOK_INPUT" | jq -r '.session_id // empty' 2>/dev/null)
 
 # Exit silently if no prompt
 [[ -z "$PROMPT" ]] && exit 0
 
 PROJECT_ROOT=$(detect_project_root)
 CONTEXT_PARTS=()
-SESSION_ID="${HOOK_SESSION_ID:-$(canonical_session_id)}"
-SESSION_ACTIVITY_JSON=$(cc_policy session-activity prompt \
-    --project-root "$PROJECT_ROOT" \
-    --session-id "$SESSION_ID" 2>/dev/null || echo '{"prompt_count":0,"started_at":0}')
-PROMPT_NUM=$(printf '%s' "$SESSION_ACTIVITY_JSON" | jq -r '.prompt_count // 0' 2>/dev/null || echo "0")
-[[ "$PROMPT_NUM" =~ ^[0-9]+$ ]] || PROMPT_NUM=0
-SESSION_STARTED_AT=$(printf '%s' "$SESSION_ACTIVITY_JSON" | jq -r '.started_at // 0' 2>/dev/null || echo "0")
-[[ "$SESSION_STARTED_AT" =~ ^[0-9]+$ ]] || SESSION_STARTED_AT=0
+SESSION_ID=$(canonical_session_id)
+_HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+_LOCAL_RUNTIME_CLI="$_HOOK_DIR/../runtime/cli.py"
+_local_cc_policy() {
+    if [[ -n "${CLAUDE_PROJECT_DIR:-}" && -z "${CLAUDE_POLICY_DB:-}" ]]; then
+        export CLAUDE_POLICY_DB="$CLAUDE_PROJECT_DIR/.claude/state.db"
+    fi
+    python3 "$_LOCAL_RUNTIME_CLI" "$@"
+}
 
-# --- Pending scratchlane approval resolution ---
-# If the previous turn asked "Allow task scratchlane ... for this task?",
-# consume a plain-English yes/no reply here and activate/deny the lane
-# automatically. The runtime owns both the pending request row and the permit.
-# The hook only forwards the user's prompt and injects the runtime's outcome.
-#
-# @decision DEC-SCRATCHLANE-003
-# @title UserPromptSubmit auto-resolves pending scratchlane approval replies
-# @status accepted
-# @rationale PreToolUse hooks can block a write and tell Claude to ask the user
-#   for scratchlane approval, but they cannot directly present a first-class
-#   approval dialog of their own. The next user prompt is the natural reply
-#   surface, so UserPromptSubmit must resolve that reply against the runtime's
-#   pending scratchlane request table. This keeps the UX to one yes/no answer
-#   from the user and avoids asking the user to run any runtime command.
-SCRATCH_RESOLVE_JSON=$(printf '%s' "$PROMPT" | cc_policy scratchlane resolve-prompt \
-    --project-root "$PROJECT_ROOT" \
-    --session-id "$SESSION_ID" \
-    2>/dev/null || echo '{"resolution":"none","additional_context":""}')
-SCRATCH_RESOLUTION=$(printf '%s' "$SCRATCH_RESOLVE_JSON" | jq -r '.resolution // "none"' 2>/dev/null || echo "none")
-SCRATCH_CONTEXT=$(printf '%s' "$SCRATCH_RESOLVE_JSON" | jq -r '.additional_context // empty' 2>/dev/null || echo "")
-if [[ "$SCRATCH_RESOLUTION" == "approved" || "$SCRATCH_RESOLUTION" == "denied" ]]; then
-    [[ -n "$SCRATCH_CONTEXT" ]] && CONTEXT_PARTS+=("$SCRATCH_CONTEXT")
+# --- v6 prompt routing: runtime owns bootstrap decisions ---
+# Keep this first. Optional context such as TODO HUD may be slow or unavailable,
+# but dispatch readiness is the control-plane fact that must survive.
+_WF_ID=$(current_workflow_id "$PROJECT_ROOT" 2>/dev/null || echo "default")
+_ROUTE=$(_local_cc_policy prompt route --workflow-id "$_WF_ID" --worktree-path "$PROJECT_ROOT" --stdin 2>/dev/null <<<"$PROMPT" || true)
+_ROUTE_ACTION=$(printf '%s' "${_ROUTE:-}" | jq -r '.action // empty' 2>/dev/null || echo "")
+_ROUTE_CONTEXT=$(printf '%s' "${_ROUTE:-}" | jq -r '.dispatch_context // empty' 2>/dev/null || echo "")
+if [[ "$_ROUTE_ACTION" == "bootstrap" && -n "$_ROUTE_CONTEXT" ]]; then
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && CONTEXT_PARTS+=("$line")
+    done <<< "$_ROUTE_CONTEXT"
+elif [[ -z "$_ROUTE_ACTION" ]]; then
+    CONTEXT_PARTS+=("V6_DISPATCH_STATUS: prompt router unavailable; root must not implement source work directly.")
 fi
 
-# --- Proof verification removed (TKT-024) ---
-# User prompt "verified" no longer flips readiness state.
-# Guardian eligibility is now gated on reviewer completion_records and
-# evaluation_state, projected from reviewer completions by dispatch_engine.
-# @decision DEC-EVAL-004
-# @title prompt-submit.sh no longer writes any readiness state
+# --- Readiness ceremony removed ---
+# User prompt "verified" never flips readiness state. v6 Guardian eligibility is
+# gated by runtime `v6_landing_readiness` assembled from reviewer/test/scope/SHA/
+# lease evidence. Legacy evaluation_state may still exist for migration flows,
+# but prompt text is never technical proof.
+# @decision DEC-V6-LANDING-001
+# @title prompt-submit.sh never writes readiness state
 # @status accepted
-# @rationale Ceremony (user typing "verified") is not technical proof.
-#   evaluation_state, projected from reviewer completions, is the sole authority.
-#   (Phase 8 Slice 10 retired the legacy tester producer path; the same rule
-#   applies to the reviewer-driven readiness pipeline.)
+# @rationale Human approval/ceremony is not technical proof; runtime evidence is.
 
 # --- First-prompt mitigation for session-init bug (Issue #10373) ---
-if [[ "$PROMPT_NUM" -le 1 ]]; then
+PROMPT_COUNT_FILE="${PROJECT_ROOT}/.claude/.prompt-count-${SESSION_ID}"
+if [[ ! -f "$PROMPT_COUNT_FILE" ]]; then
+    mkdir -p "${PROJECT_ROOT}/.claude"
+    echo "1" > "$PROMPT_COUNT_FILE"
+    echo "$(date +%s)" > "${PROJECT_ROOT}/.claude/.session-start-epoch"
     # Inject full session context (same as session-init.sh)
     get_git_state "$PROJECT_ROOT"
     get_plan_status "$PROJECT_ROOT"
@@ -80,8 +71,8 @@ if [[ "$PROMPT_NUM" -le 1 ]]; then
 
     # Inject todo HUD (same as session-init)
     TODO_SCRIPT="$HOME/.claude/scripts/todo.sh"
-    if [[ -x "$TODO_SCRIPT" ]] && command -v gh >/dev/null 2>&1; then
-        HUD_OUTPUT=$("$TODO_SCRIPT" hud 2>/dev/null || echo "")
+    if [[ -x "$TODO_SCRIPT" ]]; then
+        HUD_OUTPUT=$("$TODO_SCRIPT" hud-cached 2>/dev/null || echo "")
         if [[ -n "$HUD_OUTPUT" ]]; then
             while IFS= read -r line; do
                 CONTEXT_PARTS+=("$line")
@@ -128,15 +119,17 @@ if [[ "$PROMPT_NUM" -le 1 ]]; then
         fi
     fi
     # --- Enforcement gap surfacing (first-prompt path) ---
-    GAPS_JSON=$(cc_policy enforcement-gap list --project-root "$PROJECT_ROOT" 2>/dev/null || echo '{"items":[]}')
-    while IFS=$'\t' read -r gap_type ext tool; do
-        [[ -z "$gap_type" ]] && continue
-        if [[ "$gap_type" == "unsupported" ]]; then
-            CONTEXT_PARTS+=("ENFORCEMENT DEGRADED: No linter profile for .${ext} files. Writes to .${ext} source files are not linted.")
-        else
-            CONTEXT_PARTS+=("ENFORCEMENT DEGRADED: Linter '${tool}' for .${ext} files is not installed. Install it to restore enforcement.")
-        fi
-    done < <(printf '%s' "$GAPS_JSON" | jq -r '.items[]? | [.gap_type, .ext, .tool] | @tsv' 2>/dev/null)
+    GAPS_FILE_PS="${PROJECT_ROOT}/.claude/.enforcement-gaps"
+    if [[ -f "$GAPS_FILE_PS" && -s "$GAPS_FILE_PS" ]]; then
+        while IFS='|' read -r gap_type ext tool _first _count; do
+            [[ -z "$gap_type" ]] && continue
+            if [[ "$gap_type" == "unsupported" ]]; then
+                CONTEXT_PARTS+=("ENFORCEMENT DEGRADED: No linter profile for .${ext} files. Writes to .${ext} source files are not linted.")
+            else
+                CONTEXT_PARTS+=("ENFORCEMENT DEGRADED: Linter '${tool}' for .${ext} files is not installed. Install it to restore enforcement.")
+            fi
+        done < "$GAPS_FILE_PS"
+    fi
 fi
 
 # --- Inject agent findings from previous subagent runs (runtime events) ---
@@ -232,24 +225,38 @@ if echo "$PROMPT" | grep -qiE '\bresearch\b|\bcompare\b|\bwhat.*(people|communit
     fi
 fi
 
-# --- Compaction heuristic (opt-in) ---
+# --- Increment prompt counter ---
+if [[ -f "$PROMPT_COUNT_FILE" ]]; then
+    CURRENT_COUNT=$(cat "$PROMPT_COUNT_FILE" 2>/dev/null || echo "0")
+    [[ "$CURRENT_COUNT" =~ ^[0-9]+$ ]] || CURRENT_COUNT=0
+    echo "$((CURRENT_COUNT + 1))" > "$PROMPT_COUNT_FILE"
+fi
+
+# --- Compaction heuristic ---
 # @decision DEC-COMPACT-001
-# @title Compaction suggestion hook is explicitly opt-in
+# @title Smart compaction suggestions based on prompts and session duration
 # @status accepted
-# @rationale The previous fixed-threshold compaction hints added drag in
-# long-context sessions (e.g. Opus 1M) where no compaction was needed.
-# Suggestions now run only when CLAUDEX_ENABLE_COMPACTION_HINTS=1.
-if [[ "${CLAUDEX_ENABLE_COMPACTION_HINTS:-0}" == "1" ]]; then
+# @rationale Proactively suggest /compact at predictable checkpoints (35, 60 prompts
+# or 45, 90 minutes) to prevent context overflow. Primary trigger is prompt count
+# (more reliable). Secondary is session duration (catches long sessions with fewer
+# prompts). Narrow time windows prevent spam across multiple prompts.
+if [[ -f "$PROMPT_COUNT_FILE" ]]; then
+    PROMPT_NUM=$(cat "$PROMPT_COUNT_FILE" 2>/dev/null || echo "0")
+    [[ "$PROMPT_NUM" =~ ^[0-9]+$ ]] || PROMPT_NUM=0
+
     SUGGEST_COMPACT=false
     COMPACT_REASON=""
 
+    # Primary: prompt count thresholds
     if [[ "$PROMPT_NUM" -eq 35 || "$PROMPT_NUM" -eq 60 ]]; then
         SUGGEST_COMPACT=true
         COMPACT_REASON="$PROMPT_NUM prompts in this session"
     fi
 
-    if [[ "$SUGGEST_COMPACT" == "false" && "$SESSION_STARTED_AT" -gt 0 ]]; then
-        START_EPOCH="$SESSION_STARTED_AT"
+    # Secondary: session duration
+    EPOCH_FILE="${PROJECT_ROOT}/.claude/.session-start-epoch"
+    if [[ "$SUGGEST_COMPACT" == "false" && -f "$EPOCH_FILE" ]]; then
+        START_EPOCH=$(cat "$EPOCH_FILE" 2>/dev/null || echo "0")
         NOW_EPOCH=$(date +%s)
         ELAPSED_MIN=$(( (NOW_EPOCH - START_EPOCH) / 60 ))
         if [[ "$ELAPSED_MIN" -ge 45 && "$ELAPSED_MIN" -le 47 ]] || \

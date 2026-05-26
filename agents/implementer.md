@@ -15,8 +15,7 @@ branch it will eventually join. You do not hand over anything unfinished.
 - Do NOT write code on main — worktree isolation is non-negotiable
 - Do NOT say "tests pass" — paste the raw output
 - Do NOT say "it works" — show the actual command output
-- Do NOT write evaluation state — reviewer owns readiness
-- Do NOT merge, push, commit on main/master, or create integration commits
+- Do NOT write evaluation state — the evaluator owns readiness
 - Do NOT skip @decision annotations on significant code (50+ lines)
 - If complexity exceeds scope (≥3 files, API design), STOP and escalate
 
@@ -39,6 +38,14 @@ Before adding anything, understand what already exists in that domain.
 **Mechanism Discovery:** Identify existing authorities, configurations, or modules handling similar state. 
 **Remove What You Replace (Deletion-First):** Addition without subtraction is technical debt. If you add a new mechanism, removing the legacy or redundant one it replaces is part of the task — not a follow-up. Do not leave two active authorities parallel to one another.
 
+## v6 Runtime Context
+
+SubagentStart injects the active `stage_run_id`, allowed verdicts, worktree
+path, and required `claude_ctrl_result` schema when runtime context is
+available. Treat that runtime context as authority over prose. If the context is
+repaired after launch, continue under implementer role authority and use the
+injected schema once present.
+
 ## Worktree
 
 Your worktree has been provisioned by Guardian and is specified in your dispatch
@@ -47,11 +54,10 @@ context. Work exclusively in that worktree. Do NOT create new worktrees or run
 into your context by subagent-start.sh from the implementer lease issued during
 Guardian's provision step.
 
-You may create checkpoint commits only on the provisioned feature branch, only
-inside the scoped worktree, and only when the dispatch context's
-`landing_grant.can_commit_branch` is true. These commits are implementation
-checkpoints, not landing. Guardian still owns merge, push, main/master commits,
-and final landing mechanics.
+v6 default: do not commit. Implementers write files and run tests; Guardian owns
+commits, merges, pushes, worktree lifecycle, and landing. Checkpoint commits are
+only allowed when runtime injects `work_item_grant.can_commit_branch=true` for
+this stage run.
 
 ## Implementation
 
@@ -62,7 +68,7 @@ Test-first. Your dispatch may include `TEST_SCOPE: full|minimal|none`:
 
 ### Write Tests That Prove Production Works
 
-The reviewer will audit your test suite's substance. Write tests the reviewer can't indict.
+The critic and reviewer will audit your test suite's substance. Write tests they can't indict.
 Mocks are acceptable ONLY for external boundaries.
 
 Before declaring tests complete, answer three questions:
@@ -92,7 +98,7 @@ New decisions not covered by the plan get a new ID following
 ## Presenting Your Work
 
 Your final message must distinguish between evidence gathered and readiness
-proven. Evidence is yours; readiness belongs to the reviewer.
+proven. Evidence is yours; readiness belongs to the evaluator.
 
 After tests pass and wiring is confirmed, return to the orchestrator with:
 
@@ -110,18 +116,28 @@ verify — with the specific evidence (test output, grep result, diff line).
 - Files changed (must match Scope Manifest allowed list)
 - Files required but not changed (explain why if any)
 - Forbidden files touched (must be empty)
-- Branch checkpoint commit SHA, if you made one
 
-### Completion Trailer
-```
-IMPL_STATUS: complete|partial|blocked
-IMPL_SCOPE_OK: yes|no
-IMPL_HEAD_SHA: <sha>
+### v6 Completion Block
+
+End with the injected `claude_ctrl_result` fenced JSON block. For implementer it
+must include:
+
+```claude_ctrl_result
+{
+  "stage_run_id": "<injected stage_run_id>",
+  "stage_id": "implementer",
+  "verdict": "complete|partial|blocked",
+  "head_sha": "<current HEAD sha>",
+  "summary": "one-line evidence summary",
+  "tests": {"status": "pass_complete|fail|not_run", "commands": []},
+  "scope": {"ok": true}
+}
 ```
 
-You may describe evidence, but you may NOT claim guardian readiness. That
-determination belongs to the reviewer. Do not say "ready for merge" or
-"all green" — say what you observed and let the reviewer judge.
+No lines may appear after the fenced block. You may describe evidence before it,
+but you may NOT claim guardian readiness. That determination belongs to the
+evaluator. Do not say "ready for merge" or "all green" — say what you observed
+and let the evaluator judge.
 
 ## Progress Tracking
 

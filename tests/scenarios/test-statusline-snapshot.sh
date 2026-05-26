@@ -2,13 +2,12 @@
 # test-statusline-snapshot.sh — scenario test for `cc-policy statusline snapshot`.
 #
 # Verifies that the CLI path returns a JSON object containing all canonical
-# statusline fields, and that evaluation, worktree_count, dispatch_status,
-# and active_agent fields reflect state mutations made through other cc-policy
-# subcommands.
+# statusline fields, and that worktree_count, proof_status, and active_agent
+# fields reflect state mutations made through other cc-policy subcommands.
 #
 # Production sequence exercised:
 #   1. Schema ensured (auto-provisioned on first call)
-#   2. State populated via cc-policy marker/worktree/completion/event
+#   2. State populated via cc-policy proof/marker/worktree/dispatch/event
 #   3. cc-policy statusline snapshot called
 #   4. JSON output validated for key presence and correct values
 #
@@ -96,11 +95,9 @@ snap=$(policy statusline snapshot)
 # W-CONV-4: proof_status/proof_workflow removed from snapshot
 # DEC-SL-160: last_review and errors are new required fields
 for key in active_agent active_agent_id \
-           eval_status eval_workflow eval_head_sha marker_age_seconds \
-           worktree_count worktrees dispatch_status dispatch_workflow \
-           dispatch_from_role dispatch_from_verdict dispatch_initiative \
+           worktree_count worktrees dispatch_status dispatch_initiative \
            dispatch_cycle_id recent_event_count recent_events \
-           last_review critic_run snapshot_at status errors; do
+           last_review snapshot_at status errors; do
     assert_jq "key '$key' present" "$snap" "has(\"$key\")"
 done
 
@@ -111,7 +108,6 @@ assert_eq "active_agent defaults to null"   "$snap" ".active_agent"   "null"
 assert_eq "status is ok"                    "$snap" ".status"         "ok"
 assert_eq "errors defaults to []"           "$snap" "(.errors | length)" "0"
 assert_eq "last_review.reviewed is false"   "$snap" ".last_review.reviewed" "false"
-assert_eq "critic_run.found is false"       "$snap" ".critic_run.found" "false"
 
 # ---------------------------------------------------------------------------
 # Test 3: active_agent reflects marker
@@ -119,12 +115,10 @@ assert_eq "critic_run.found is false"       "$snap" ".critic_run.found" "false"
 echo ""
 echo "-- 3: active_agent reflects active marker"
 
-# Phase 8 Slice 11: use a live role (reviewer) — ``tester`` is retired and
-# markers set with role="tester" are rejected by ensure_schema cleanup.
-policy marker set "agent-sc-001" "reviewer" >/dev/null
+policy marker set "agent-sc-001" "tester" >/dev/null
 
 snap=$(policy statusline snapshot)
-assert_eq "active_agent is reviewer"          "$snap" ".active_agent"    "reviewer"
+assert_eq "active_agent is tester"            "$snap" ".active_agent"    "tester"
 assert_eq "active_agent_id is agent-sc-001"   "$snap" ".active_agent_id" "agent-sc-001"
 
 # ---------------------------------------------------------------------------
@@ -150,33 +144,19 @@ snap=$(policy statusline snapshot)
 assert_eq "worktree_count drops to 1 after remove" "$snap" ".worktree_count" "1"
 
 # ---------------------------------------------------------------------------
-# Test 5: dispatch_status reflects latest valid completion record
+# Test 5: dispatch_initiative and dispatch_cycle_id reflect active cycle
 # ---------------------------------------------------------------------------
 echo ""
-echo "-- 5: dispatch_status derives from completion records"
+echo "-- 5: dispatch fields reflect active cycle (DEC-WS6-001: queue non-authoritative)"
 
-review_payload=$(jq -nc '{
-    REVIEW_VERDICT: "ready_for_guardian",
-    REVIEW_HEAD_SHA: "abc123",
-    REVIEW_FINDINGS_JSON: ({findings: [{severity: "note", title: "ok", detail: "looks good"}]} | tojson)
-}')
+cycle_json=$(policy dispatch cycle-start "INIT-002")
+cycle_id=$(printf '%s' "$cycle_json" | jq -r '.id')
 
-policy completion submit \
-    --lease-id "lease-sc-001" \
-    --workflow-id "wf-sc-001" \
-    --role "reviewer" \
-    --payload "$review_payload" >/dev/null
-
-# DEC-WS6-001: dispatch_queue/cycle storage is retired. dispatch_status now
-# derives from the latest valid completion record; cycle fields remain present
-# with null defaults for compatibility.
+# DEC-WS6-001: dispatch_queue enqueue removed from hot path. dispatch_status
+# now derives from completion records. Test only verifies cycle fields.
 snap=$(policy statusline snapshot)
-assert_eq "dispatch_status is guardian"        "$snap" ".dispatch_status"       "guardian"
-assert_eq "dispatch_workflow matches"          "$snap" ".dispatch_workflow"     "wf-sc-001"
-assert_eq "dispatch_from_role is reviewer"     "$snap" ".dispatch_from_role"    "reviewer"
-assert_eq "dispatch_from_verdict matches"      "$snap" ".dispatch_from_verdict" "ready_for_guardian"
-assert_eq "dispatch_initiative remains null"   "$snap" ".dispatch_initiative"   "null"
-assert_eq "dispatch_cycle_id remains null"     "$snap" ".dispatch_cycle_id"     "null"
+assert_eq "dispatch_initiative is INIT-002"  "$snap" ".dispatch_initiative" "INIT-002"
+assert_eq "dispatch_cycle_id matches"        "$snap" ".dispatch_cycle_id"   "$cycle_id"
 
 # ---------------------------------------------------------------------------
 # Test 6: recent_events list populated

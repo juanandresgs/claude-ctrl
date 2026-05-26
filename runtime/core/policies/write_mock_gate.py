@@ -16,13 +16,12 @@ Logic:
       Strike 2+ → DENY
 
 @decision DEC-PE-W5-003
-Title: write_mock_gate is a Python port of mock-gate.sh with DB-backed strikes
+Title: write_mock_gate is a Python port of mock-gate.sh, registered at priority 750
 Status: accepted
 Rationale: mock-gate.sh enforced Sacred Practice #5 (real tests, not mocks) by
   scanning test-file writes for internal mocking patterns. PE-W5 migrates this
   to a PolicyRegistry-registered Python policy. The policy reads content from
-  tool_input and strike state from PolicyContext, then emits a policy_strikes
-  effect for cli.py to persist in state.db.
+  tool_input directly (no I/O) and manages a strikes flat file under project_root.
   Priority 750 places it after test_gate_pretool (650) and doc_gate (700).
   The original shell hook stays as a no-op adapter — settings.json wiring unchanged.
 """
@@ -31,10 +30,10 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from typing import Optional
 
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
-from runtime.core.policy_utils import PATH_KIND_OTHER, PATH_KIND_SOURCE, classify_policy_path
 
 # ---------------------------------------------------------------------------
 # Test file detection
@@ -163,29 +162,29 @@ def _has_internal_mock(content: str) -> bool:
     return _has_internal_py_mock(content) or _has_internal_js_mock(content) or _has_go_mock(content)
 
 
-_POLICY_NAME = "mock_gate"
-_SCOPE_KEY = "internal_mock"
+# ---------------------------------------------------------------------------
+# Strikes file helpers
+# ---------------------------------------------------------------------------
 
 
-def _strike_count(request: PolicyRequest) -> int:
-    row = request.context.policy_strikes.get(f"{_POLICY_NAME}:{_SCOPE_KEY}") or {}
+def _strikes_path(project_root: str) -> str:
+    return os.path.join(project_root, ".claude", ".mock-gate-strikes")
+
+
+def _read_strikes(project_root: str) -> int:
+    path = _strikes_path(project_root)
     try:
-        return int(row.get("count") or 0)
+        raw = open(path).read().strip()
+        return int(raw.split("|")[0])
     except Exception:
         return 0
 
 
-def _strike_effect(project_root: str, count: int) -> dict:
-    return {
-        "policy_strikes": [
-            {
-                "project_root": project_root,
-                "policy_name": _POLICY_NAME,
-                "scope_key": _SCOPE_KEY,
-                "count": max(0, int(count or 0)),
-            }
-        ]
-    }
+def _write_strikes(project_root: str, count: int) -> None:
+    path = _strikes_path(project_root)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(f"{count}|{int(time.time())}")
 
 
 # ---------------------------------------------------------------------------
@@ -211,15 +210,6 @@ def mock_gate(request: PolicyRequest) -> Optional[PolicyDecision]:
     if not file_path:
         return None
 
-    info = classify_policy_path(
-        file_path,
-        project_root=request.context.project_root or "",
-        worktree_path=request.context.worktree_path or "",
-        scratch_roots=request.context.scratchlane_roots,
-    )
-    if info.kind not in {PATH_KIND_SOURCE, PATH_KIND_OTHER}:
-        return None
-
     # Only inspect test files
     if not _is_test_file(file_path):
         return None
@@ -239,9 +229,10 @@ def mock_gate(request: PolicyRequest) -> Optional[PolicyDecision]:
 
     # Internal mock detected — apply escalating strikes
     project_root = request.context.project_root or ""
-    current_strikes = _strike_count(request) if project_root else 0
+    current_strikes = _read_strikes(project_root) if project_root else 0
     new_strikes = current_strikes + 1
-    effects = _strike_effect(project_root, new_strikes) if project_root else None
+    if project_root:
+        _write_strikes(project_root, new_strikes)
 
     if new_strikes >= 2:
         return PolicyDecision(
@@ -254,8 +245,7 @@ def mock_gate(request: PolicyRequest) -> Optional[PolicyDecision]:
                 "databases, third-party services). Add '# @mock-exempt: <reason>' if mocking "
                 "is truly necessary here."
             ),
-            policy_name=_POLICY_NAME,
-            effects=effects,
+            policy_name="mock_gate",
         )
 
     # Strike 1: advisory feedback
@@ -268,6 +258,5 @@ def mock_gate(request: PolicyRequest) -> Optional[PolicyDecision]:
             "Next mock-heavy test write will be blocked. "
             "Add '# @mock-exempt: <reason>' if mocking is truly necessary."
         ),
-        policy_name=_POLICY_NAME,
-        effects=effects,
+        policy_name="mock_gate",
     )

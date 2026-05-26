@@ -18,8 +18,9 @@ import time
 
 import pytest
 
-from runtime.core import leases
 from runtime.schemas import ensure_schema
+from runtime.core import leases
+
 
 # ---------------------------------------------------------------------------
 # Fixture
@@ -91,32 +92,6 @@ def test_classify_nested_shell_git_push_is_high_risk():
     assert leases.classify_git_op('bash -lc "git push origin main"') == "high_risk"
 
 
-def test_parse_git_invocations_collects_nested_shell_commands():
-    invocations = leases.parse_git_invocations('bash -lc "git status; git push origin main"')
-    assert [inv.subcommand for inv in invocations] == ["status", "push"]
-    assert leases.classify_git_op('bash -lc "git status; git push origin main"') == "high_risk"
-
-
-def test_parse_git_invocations_preserves_newline_separators_for_plumbing():
-    command = (
-        'COMMIT=$(git commit-tree "$TREE" -p "$PARENT")\n'
-        'git update-ref refs/heads/main "$COMMIT"'
-    )
-    invocations = leases.parse_git_invocations(command)
-    assert [inv.subcommand for inv in invocations] == ["commit-tree", "update-ref"]
-    assert leases.classify_git_op(command) == "high_risk"
-
-
-def test_parse_git_invocations_finds_quoted_command_substitution():
-    invocations = leases.parse_git_invocations('echo "$(git update-ref refs/heads/main HEAD)"')
-    assert [inv.subcommand for inv in invocations] == ["update-ref"]
-    assert leases.classify_git_op('echo "$(git update-ref refs/heads/main HEAD)"') == "high_risk"
-
-
-def test_classify_commit_tree_is_governed_plumbing():
-    assert leases.classify_git_op("git commit-tree HEAD^{tree} -p HEAD") == "high_risk"
-
-
 # ---------------------------------------------------------------------------
 # issue()
 # ---------------------------------------------------------------------------
@@ -131,7 +106,7 @@ def test_issue_returns_lease_with_uuid_id(conn):
 
 def test_issue_sets_expires_at_correctly(conn):
     ttl = 3600
-    lease = leases.issue(conn, role="reviewer", ttl=ttl)
+    lease = leases.issue(conn, role="tester", ttl=ttl)
     assert lease["expires_at"] == lease["issued_at"] + ttl
 
 
@@ -160,7 +135,7 @@ def test_issue_revokes_existing_active_for_same_worktree(conn):
     """Uniqueness invariant: second issue for same worktree revokes first."""
     wt = "/repo/feature-x"
     lease1 = leases.issue(conn, role="implementer", worktree_path=wt)
-    lease2 = leases.issue(conn, role="reviewer", worktree_path=wt)
+    lease2 = leases.issue(conn, role="tester", worktree_path=wt)
 
     # First lease should now be revoked.
     first = leases.get(conn, lease1["lease_id"])
@@ -216,7 +191,7 @@ def test_claim_revokes_existing_active_lease_for_same_agent(conn):
     lease_a = leases.issue(conn, role="implementer", worktree_path="/repo/wt-a")
     leases.claim(conn, agent_id="agent-1", worktree_path="/repo/wt-a")
 
-    lease_b = leases.issue(conn, role="reviewer", worktree_path="/repo/wt-b")
+    lease_b = leases.issue(conn, role="tester", worktree_path="/repo/wt-b")
     # Claiming lease_b with agent-1 should revoke lease_a for that agent.
     leases.claim(conn, agent_id="agent-1", lease_id=lease_b["lease_id"])
 
@@ -238,7 +213,7 @@ def test_claim_by_lease_id_takes_priority(conn):
 
 def test_get_current_priority_lease_id_over_agent(conn):
     lease1 = leases.issue(conn, role="implementer", worktree_path="/repo/wt1")
-    lease2 = leases.issue(conn, role="reviewer", worktree_path="/repo/wt2")
+    lease2 = leases.issue(conn, role="tester", worktree_path="/repo/wt2")
     leases.claim(conn, "agent-x", lease_id=lease2["lease_id"])
 
     # lease_id should win over agent_id.
@@ -248,7 +223,7 @@ def test_get_current_priority_lease_id_over_agent(conn):
 
 def test_get_current_priority_agent_over_worktree(conn):
     leases.issue(conn, role="implementer", worktree_path="/repo/wt1")
-    lease2 = leases.issue(conn, role="reviewer", worktree_path="/repo/wt2")
+    lease2 = leases.issue(conn, role="tester", worktree_path="/repo/wt2")
     leases.claim(conn, "agent-x", lease_id=lease2["lease_id"])
 
     result = leases.get_current(conn, agent_id="agent-x", worktree_path="/repo/wt1")
@@ -257,7 +232,7 @@ def test_get_current_priority_agent_over_worktree(conn):
 
 def test_get_current_priority_worktree_over_workflow(conn):
     lease1 = leases.issue(conn, role="implementer", worktree_path="/repo/wt1", workflow_id="wf-1")
-    leases.issue(conn, role="reviewer", worktree_path="/repo/wt2", workflow_id="wf-2")
+    leases.issue(conn, role="tester", worktree_path="/repo/wt2", workflow_id="wf-2")
 
     result = leases.get_current(conn, worktree_path="/repo/wt1", workflow_id="wf-2")
     assert result["lease_id"] == lease1["lease_id"]
@@ -404,46 +379,6 @@ def test_expire_stale_does_not_touch_non_active_leases(conn):
     assert count == 0  # released lease not touched by expire_stale
 
 
-def test_revoke_missing_worktrees_revokes_deleted_worktree_lease(conn, tmp_path):
-    worktree = tmp_path / "feature-worktree"
-    worktree.mkdir()
-    lease = leases.issue(conn, role="guardian", worktree_path=str(worktree))
-    worktree.rmdir()
-
-    count = leases.revoke_missing_worktrees(conn)
-
-    assert count == 1
-    refreshed = leases.get(conn, lease["lease_id"])
-    assert refreshed["status"] == "revoked"
-    assert refreshed["released_at"] is not None
-
-
-def test_revoke_missing_worktrees_keeps_existing_worktree_lease(conn, tmp_path):
-    worktree = tmp_path / "existing-worktree"
-    worktree.mkdir()
-    lease = leases.issue(conn, role="guardian", worktree_path=str(worktree))
-
-    count = leases.revoke_missing_worktrees(conn)
-
-    assert count == 0
-    refreshed = leases.get(conn, lease["lease_id"])
-    assert refreshed["status"] == "active"
-
-
-def test_revoke_missing_worktrees_ignores_released_missing_worktree(conn, tmp_path):
-    worktree = tmp_path / "released-worktree"
-    worktree.mkdir()
-    lease = leases.issue(conn, role="guardian", worktree_path=str(worktree))
-    leases.release(conn, lease["lease_id"])
-    worktree.rmdir()
-
-    count = leases.revoke_missing_worktrees(conn)
-
-    assert count == 0
-    refreshed = leases.get(conn, lease["lease_id"])
-    assert refreshed["status"] == "released"
-
-
 # ---------------------------------------------------------------------------
 # Full lifecycle (compound interaction)
 # ---------------------------------------------------------------------------
@@ -537,7 +472,7 @@ def test_concurrent_worktrees_no_collision(conn):
     )
     lease_b = leases.issue(
         conn,
-        role="reviewer",
+        role="tester",
         worktree_path="/repo/b",
         workflow_id="wf-b",
         allowed_ops=["routine_local"],
@@ -717,27 +652,10 @@ def test_validate_op_routine_landing_still_requires_eval(conn):
     assert "ready_for_guardian" in result["reason"]
 
 
-def test_validate_op_push_no_longer_requires_approval(conn):
-    """Guardian push remains high_risk but is no longer approval-token gated."""
-    leases.issue(
-        conn,
-        "guardian",
-        worktree_path="/wt6-push",
-        allowed_ops=["routine_local", "high_risk"],
-        requires_eval=False,
-        workflow_id="wf-6-push",
-    )
-    result = leases.validate_op(conn, "git push origin main", worktree_path="/wt6-push")
-    assert result["op_class"] == "high_risk"
-    assert result["requires_approval"] is False
-    assert result["approval_ok"] is None
-    assert result["allowed"] is True
+def test_validate_op_high_risk_still_requires_eval_and_approval(conn):
+    """high_risk ops are unchanged by the admin_recovery introduction.
 
-
-def test_validate_op_rebase_still_requires_eval_and_approval(conn):
-    """Approval-gated high_risk ops remain unchanged by the push exception.
-
-    A rebase without eval clearance must still fail before landing.
+    A push/rebase/reset --hard must still fail both eval and approval gates.
     """
     leases.issue(
         conn,
@@ -747,30 +665,10 @@ def test_validate_op_rebase_still_requires_eval_and_approval(conn):
         requires_eval=True,
         workflow_id="wf-6",
     )
-    # No eval state, no approval — rebase must be denied at eval gate first.
-    result = leases.validate_op(conn, "git rebase main", worktree_path="/wt6")
+    # No eval state, no approval — push must be denied at eval gate first.
+    result = leases.validate_op(conn, "git push origin main", worktree_path="/wt6")
     assert result["op_class"] == "high_risk"
     assert result["eval_ok"] is False
-    assert result["allowed"] is False
-
-
-def test_validate_op_multiline_plumbing_requires_approval(conn):
-    leases.issue(
-        conn,
-        "guardian",
-        worktree_path="/wt7-plumbing",
-        allowed_ops=["routine_local", "high_risk"],
-        requires_eval=False,
-        workflow_id="wf-7-plumbing",
-    )
-    command = (
-        'COMMIT=$(git commit-tree "$TREE" -p "$PARENT")\n'
-        'git update-ref refs/heads/main "$COMMIT"'
-    )
-    result = leases.validate_op(conn, command, worktree_path="/wt7-plumbing")
-    assert result["op_class"] == "high_risk"
-    assert result["requires_approval"] is True
-    assert result["approval_ok"] is False
     assert result["allowed"] is False
 
 
@@ -790,15 +688,13 @@ def test_role_safe_defaults_guardian(conn):
     assert "admin_recovery" in allowed
 
 
-def test_role_safe_defaults_tester_retired(conn):
-    """Phase 8 Slice 11: tester is no longer a known role in ROLE_DEFAULTS.
-    issue(role='tester') falls back to the unknown-role default of
-    ['routine_local'] — the same path as any other unknown role string."""
+def test_role_safe_defaults_tester(conn):
+    """issue(role='tester') must produce an empty allowed_ops list."""
     import json
 
     lease = leases.issue(conn, role="tester")
     allowed = json.loads(lease["allowed_ops_json"])
-    assert allowed == ["routine_local"]
+    assert allowed == []
 
 
 def test_role_safe_defaults_implementer(conn):
@@ -819,15 +715,6 @@ def test_role_safe_defaults_planner(conn):
     assert allowed == []
 
 
-def test_role_safe_defaults_reviewer(conn):
-    """issue(role='reviewer') must produce an empty allowed_ops list — reviewer is read-only."""
-    import json
-
-    lease = leases.issue(conn, role="reviewer")
-    allowed = json.loads(lease["allowed_ops_json"])
-    assert allowed == []
-
-
 def test_role_safe_defaults_unknown_role(conn):
     """issue(role='unknown') falls back to ['routine_local'] for safety."""
     import json
@@ -841,7 +728,7 @@ def test_role_safe_defaults_explicit_override(conn):
     """Explicit allowed_ops= overrides ROLE_DEFAULTS regardless of role."""
     import json
 
-    lease = leases.issue(conn, role="reviewer", allowed_ops=["routine_local"])
+    lease = leases.issue(conn, role="tester", allowed_ops=["routine_local"])
     allowed = json.loads(lease["allowed_ops_json"])
     assert allowed == ["routine_local"]
 
@@ -853,23 +740,23 @@ def test_role_safe_defaults_explicit_override(conn):
 
 def test_claim_expected_role_match(conn):
     """Claim with expected_role matching the lease role succeeds."""
-    leases.issue(conn, role="reviewer", worktree_path="/repo/wt-reviewer")
+    leases.issue(conn, role="tester", worktree_path="/repo/wt-tester")
     result = leases.claim(
-        conn, agent_id="agent-r", worktree_path="/repo/wt-reviewer", expected_role="reviewer"
+        conn, agent_id="agent-t", worktree_path="/repo/wt-tester", expected_role="tester"
     )
     assert result is not None
-    assert result["agent_id"] == "agent-r"
-    assert result["role"] == "reviewer"
+    assert result["agent_id"] == "agent-t"
+    assert result["role"] == "tester"
 
 
 def test_claim_expected_role_mismatch(conn):
     """Claim with expected_role not matching the lease role returns None.
 
-    This is the key safety invariant: a reviewer cannot claim a guardian lease.
+    This is the key safety invariant: a tester cannot claim a guardian lease.
     """
     leases.issue(conn, role="guardian", worktree_path="/repo/wt-guardian")
     result = leases.claim(
-        conn, agent_id="agent-r", worktree_path="/repo/wt-guardian", expected_role="reviewer"
+        conn, agent_id="agent-t", worktree_path="/repo/wt-guardian", expected_role="tester"
     )
     assert result is None
 

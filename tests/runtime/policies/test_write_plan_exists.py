@@ -113,24 +113,20 @@ def test_meta_infra_skipped():
         assert plan_exists(_req(os.path.join(tmpdir, ".claude", "hook.sh"), tmpdir)) is None
 
 
-def test_edit_tool_requires_plan_before_staleness_bypass():
-    """Edit skips staleness only after MASTER_PLAN.md presence is proven."""
+def test_edit_tool_skipped():
+    """Edit tool is inherently scoped — plan_exists has no opinion."""
     with tempfile.TemporaryDirectory() as tmpdir:
         _init_git_repo(tmpdir)
+        # No MASTER_PLAN.md — but Edit should still skip
         req = _req(os.path.join(tmpdir, "app.py"), tmpdir, tool_name="Edit")
-        result = plan_exists(req)
-        assert result is not None
-        assert result.action == "deny"
-        assert "MASTER_PLAN.md" in result.reason
-
-        _write_master_plan(tmpdir)
         assert plan_exists(req) is None
 
 
-def test_small_write_requires_plan_before_fast_mode_feedback():
-    """Small writes skip staleness only after MASTER_PLAN.md exists."""
+def test_small_write_returns_feedback():
+    """Write with < 20 lines returns feedback (fast-mode bypass), not deny."""
     with tempfile.TemporaryDirectory() as tmpdir:
         _init_git_repo(tmpdir)
+        # No MASTER_PLAN.md — small write should bypass, not hard-deny
         req = _req(
             os.path.join(tmpdir, "app.py"),
             tmpdir,
@@ -138,26 +134,17 @@ def test_small_write_requires_plan_before_fast_mode_feedback():
             content="x\n" * 5,  # 5 lines < 20
         )
         result = plan_exists(req)
-        assert result is not None
-        assert result.action == "deny"
-        assert "MASTER_PLAN.md" in result.reason
-
-        _write_master_plan(tmpdir)
-        result = plan_exists(req)
+        # fast-mode returns feedback (not None, not deny)
         assert result is not None
         assert result.action == "feedback"
         assert "Fast-mode bypass" in result.reason
 
 
-def test_non_git_repo_requires_plan_presence():
+def test_non_git_repo_skipped():
     with tempfile.TemporaryDirectory() as tmpdir:
+        # tmpdir has no git repo
         result = plan_exists(_req(os.path.join(tmpdir, "app.py"), tmpdir))
-        assert result is not None
-        assert result.action == "deny"
-        assert "MASTER_PLAN.md" in result.reason
-
-        _write_master_plan(tmpdir)
-        assert plan_exists(_req(os.path.join(tmpdir, "app.py"), tmpdir)) is None
+        assert result is None
 
 
 # ---------------------------------------------------------------------------

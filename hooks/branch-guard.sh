@@ -24,7 +24,6 @@ source "$(dirname "$0")/log.sh"
 source "$(dirname "$0")/context-lib.sh"
 
 HOOK_INPUT=$(read_input)
-seed_project_dir_from_hook_payload_cwd "$HOOK_INPUT"
 FILE_PATH=$(get_field '.tool_input.file_path')
 
 # Exit silently if no file path
@@ -68,7 +67,7 @@ if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
     "hookEventName": "PreToolUse",
     "permissionDecision": "deny",
     "blockingHook": "branch-guard.sh",
-    "permissionDecisionReason": "BLOCKED: Cannot write source code on $CURRENT_BRANCH branch. Sacred Practice #2: Main is sacred.\n\nAction: Invoke the Guardian agent to create an isolated worktree for this work."
+    "permissionDecisionReason": "BLOCKED: Cannot write source code on $CURRENT_BRANCH branch. Sacred Practice #2: Main is sacred.\n\nAction: Launch Guardian naturally with provisioning capability. Guardian runs \`cc-policy worktree provision\`; after it reports the leased worktree, launch implementer as an ordinary Agent with no isolation flag. Do not retry the source edit from the orchestrator."
   }
 }
 EOF

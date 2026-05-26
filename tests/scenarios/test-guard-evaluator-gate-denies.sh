@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
-# test-guard-evaluator-gate-denies.sh: proves guard.sh Check 10 denies
-# git commit when evaluation_state is "needs_changes" or "blocked_by_plan".
+# test-guard-evaluator-gate-denies.sh: proves v6 landing gate denies
+# git commit when v6_landing_readiness is not ready.
 #
 # Two sub-cases exercised in sequence:
 #   Sub-case A: needs_changes   → deny
 #   Sub-case B: blocked_by_plan → deny
 #
+# Stale proof_state == "verified" is also set to confirm it cannot satisfy
+# the new gate (regression guard for Evaluation Contract check 15).
+#
 # @decision DEC-EVAL-003
 # @title guard.sh Check 10 gates on evaluation_state, not proof_state
 # @status accepted
 # @rationale Verifies that non-ready evaluation statuses block Guardian.
-#   The retired proof_state CLI is intentionally absent; evaluation_state is
-#   the only readiness authority after TKT-024 cutover.
+#   Setting proof_state=verified alongside confirms proof_state has zero
+#   enforcement effect after TKT-024 cutover.
 set -euo pipefail
 
 TEST_NAME="test-guard-evaluator-gate-denies"
@@ -38,7 +41,7 @@ run_deny_check() {
     git -C "$TMP_DIR" checkout -b "$BRANCH" -q
 
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
-    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian:land" --project-root "$TMP_DIR" >/dev/null 2>&1
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" --project-root "$TMP_DIR" >/dev/null 2>&1
 
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
         test-state set pass --project-root "$TMP_DIR" --passed 1 --total 1 >/dev/null 2>&1
@@ -46,6 +49,10 @@ run_deny_check() {
     # Set evaluation_state to a non-ready status
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
         evaluation set "$WF_ID" "$eval_status" >/dev/null 2>&1
+
+    # Also set proof_state=verified to confirm it has zero enforcement effect
+    CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
+        proof set "$WF_ID" "verified" >/dev/null 2>&1
 
     # workflow binding + scope (Check 12 must not be the reason for deny)
     CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
@@ -79,9 +86,9 @@ run_deny_check() {
         exit 1
     fi
 
-    # Deny reason must mention evaluation_state (not proof)
-    if ! printf '%s' "$reason" | grep -qi "evaluation_state"; then
-        echo "FAIL: $TEST_NAME [$sub_case] — deny reason should mention evaluation_state"
+    # Deny reason must mention v6_landing_readiness (not proof/evaluation_state fallback)
+    if ! printf '%s' "$reason" | grep -qi "v6_landing_readiness"; then
+        echo "FAIL: $TEST_NAME [$sub_case] — deny reason should mention v6_landing_readiness"
         echo "  reason: $reason"
         exit 1
     fi

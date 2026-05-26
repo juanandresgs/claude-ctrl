@@ -16,7 +16,9 @@ source "$(dirname "$0")/context-lib.sh"
 
 # Capture stdin (contains agent response)
 AGENT_RESPONSE=$(read_input 2>/dev/null || echo "{}")
-seed_project_dir_from_hook_payload_cwd "$AGENT_RESPONSE"
+if agent_response_text "$AGENT_RESPONSE" | grep -q '```claude_ctrl_result'; then
+    exit 0
+fi
 AGENT_TYPE=$(printf '%s' "$AGENT_RESPONSE" | jq -r '.agent_type // empty' 2>/dev/null || true)
 
 PROJECT_ROOT=$(detect_project_root)
@@ -28,12 +30,12 @@ _HOOK_START_AT=$(date +%s)
 # Local runtime resolution — see post-task.sh DEC-BRIDGE-002 for rationale.
 # ---------------------------------------------------------------------------
 _HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
-_LOCAL_RUNTIME_ROOT="$_HOOK_DIR/../runtime"
+_LOCAL_RUNTIME_CLI="$_HOOK_DIR/../runtime/cli.py"
 _local_cc_policy() {
-    if [[ -z "${CLAUDE_POLICY_DB:-}" ]]; then
-        _resolve_policy_db >/dev/null
+    if [[ -n "${CLAUDE_PROJECT_DIR:-}" && -z "${CLAUDE_POLICY_DB:-}" ]]; then
+        export CLAUDE_POLICY_DB="$CLAUDE_PROJECT_DIR/.claude/state.db"
     fi
-    cc_policy_local_runtime "$_LOCAL_RUNTIME_ROOT" "$@"
+    python3 "$_LOCAL_RUNTIME_CLI" "$@"
 }
 
 # track_subagent_stop removed (TKT-008): .subagent-tracker no longer written.
@@ -48,18 +50,6 @@ if [[ -n "$AGENT_TYPE" ]]; then
     _local_cc_policy lifecycle on-stop "$AGENT_TYPE" --project-root "$PROJECT_ROOT" >/dev/null 2>&1 || true
 fi
 
-# Release the seat and abandon every active supervision_thread touching it.
-# DEC-SUPERVISION-THREADS-DOMAIN-001 continuation. Best-effort — seat-release
-# failures must never block the hook. release_session_seat() is idempotent
-# (repeat calls return released=false, abandoned_count=0) so retries on
-# unexpected interrupts are safe.
-SESSION_ID=$(printf '%s' "$AGENT_RESPONSE" | jq -r '.session_id // empty' 2>/dev/null || echo "")
-if [[ -n "$SESSION_ID" && -n "$AGENT_TYPE" ]]; then
-    _local_cc_policy dispatch seat-release \
-        --session-id "$SESSION_ID" \
-        --agent-type "$AGENT_TYPE" >/dev/null 2>&1 || true
-fi
-
 ISSUES=()
 
 # Check 1: Current branch is NOT main/master (worktree was used)
@@ -70,19 +60,19 @@ fi
 
 # Check 2: Scan session-changes for 50+ line source files missing @decision
 get_session_changes "$PROJECT_ROOT"
-CHANGES_TEXT="${SESSION_CHANGES_TEXT:-}"
+CHANGES="${SESSION_FILE:-}"
 
 MISSING_COUNT=0
 MISSING_FILES=""
 DECISION_PATTERN='@decision|# DECISION:|// DECISION\('
 
-if [[ -n "$CHANGES_TEXT" ]]; then
+if [[ -n "$CHANGES" && -f "$CHANGES" ]]; then
     while IFS= read -r file; do
         [[ ! -f "$file" ]] && continue
-        # Only check source files; skip generated/vendor output and runtime meta.
-        is_source_file "$file" || continue
-        is_skippable_path "$file" && continue
-        [[ "$file" =~ (^|/)\.claude(/|$) ]] && continue
+        # Only check source files
+        [[ ! "$file" =~ \.(ts|tsx|js|jsx|py|rs|go|java|kt|swift|c|cpp|h|hpp|cs|rb|php|sh)$ ]] && continue
+        # Skip test/config
+        [[ "$file" =~ (\.test\.|\.spec\.|__tests__|\.config\.|node_modules|vendor|dist|\.git|\.claude) ]] && continue
 
         # Check line count
         line_count=$(wc -l < "$file" 2>/dev/null | tr -d ' ')
@@ -92,7 +82,7 @@ if [[ -n "$CHANGES_TEXT" ]]; then
                 MISSING_FILES+="  - $(basename "$file") ($line_count lines)\n"
             fi
         fi
-    done < <(printf '%s\n' "$CHANGES_TEXT" | sort -u)
+    done < <(sort -u "$CHANGES")
 fi
 
 if [[ "$MISSING_COUNT" -gt 0 ]]; then
@@ -100,7 +90,7 @@ if [[ "$MISSING_COUNT" -gt 0 ]]; then
 fi
 
 # Check 3: Approval-loop detection — agent should not end with unanswered question
-RESPONSE_TEXT=$(agent_response_text "$AGENT_RESPONSE")
+RESPONSE_TEXT=$(echo "$AGENT_RESPONSE" | jq -r '.last_assistant_message // .assistant_response // .response // .result // .output // empty' 2>/dev/null || echo "")
 if [[ -n "$RESPONSE_TEXT" ]]; then
     HAS_APPROVAL_QUESTION=$(echo "$RESPONSE_TEXT" | grep -iE 'do you (approve|confirm|want me to proceed)|shall I (proceed|continue)|ready to (test|review|commit)\?' || echo "")
     HAS_EXECUTION=$(echo "$RESPONSE_TEXT" | grep -iE 'tests pass|implementation complete|done|finished|all tests|ready for review' || echo "")
@@ -146,16 +136,16 @@ case "$EVAL_STATUS" in
         VERIFICATION_NOTE="Evaluation state: ready_for_guardian — Guardian may proceed."
         ;;
     needs_changes)
-        VERIFICATION_NOTE="Evaluation state: needs_changes — Reviewer found issues. Address them before re-dispatching Reviewer."
+        VERIFICATION_NOTE="Evaluation state: needs_changes — Tester found issues. Address them before re-dispatching Tester."
         ;;
     blocked_by_plan)
-        VERIFICATION_NOTE="Evaluation state: blocked_by_plan — Reviewer flagged a plan gap. Dispatch Planner to resolve."
+        VERIFICATION_NOTE="Evaluation state: blocked_by_plan — Tester flagged a plan gap. Dispatch Planner to resolve."
         ;;
     pending)
-        VERIFICATION_NOTE="Evaluation state: pending — dispatch Reviewer to evaluate this implementation."
+        VERIFICATION_NOTE="Evaluation state: pending — dispatch Tester to evaluate this implementation."
         ;;
     *)
-        VERIFICATION_NOTE="Evaluation state: idle — dispatch Reviewer after implementation evidence is prepared."
+        VERIFICATION_NOTE="Evaluation state: idle — dispatch Tester after implementation evidence is prepared."
         ;;
 esac
 
@@ -299,8 +289,7 @@ fi
 # @status accepted
 # @rationale The completion contract (DEC-IMPL-CONTRACT-001) requires a structured
 #   record in SQLite so dispatch_engine can read it in process_agent_stop(). This
-#   check performs the bash-side parse using the same trailer-matching pattern
-#   used by the other SubagentStop adapters (e.g. check-reviewer.sh, check-guardian.sh)
+#   check performs the bash-side parse using the same trailer pattern as check-tester.sh
 #   and submits via _local_cc_policy completion submit. Lease-first workflow identity
 #   (reusing _ASSESS_LEASE_CTX from Check 7) ensures the record is filed under the
 #   same workflow_id the dispatch engine resolves. When no active lease is found the

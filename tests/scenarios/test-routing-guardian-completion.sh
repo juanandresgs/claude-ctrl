@@ -1,24 +1,23 @@
 #!/usr/bin/env bash
 # test-routing-guardian-completion.sh: Verifies that post-task.sh routes
-# guardian landing completion back to planner when verdict=merged.
+# guardian completion to cycle_complete (no next role) when verdict=merged.
 #
 # Production sequence tested:
 #   1. A guardian lease is issued
 #   2. Guardian submits a valid completion record (verdict=merged)
 #   3. post-task.sh fires with agent_type=guardian
 #   4. Hook reads the active lease, reads the completion record, calls
-#      cc-policy completion route guardian merged -> planner
-#   5. Hook produces an AUTO_DISPATCH planner suggestion
+#      cc-policy completion route guardian merged → null (cycle complete)
+#   5. Hook emits cycle_complete event, produces no dispatch suggestion
 #   6. Lease is released after routing
 #
 # @decision DEC-DISPATCH-TEST-004
-# @title Scenario test: guardian merged verdict resumes planner continuation
+# @title Scenario test: guardian merged verdict produces cycle_complete
 # @status accepted
-# @rationale The stage registry is the routing authority. guardian:land with a
-#   merged verdict returns to planner so the planner owns the next decision
-#   (next work item, goal_complete, user decision, or external block). The
-#   guardian completion path must produce AUTO_DISPATCH: planner and must not
-#   emit the old guardian-side cycle_complete signal.
+# @rationale Verifies the terminal state of the dispatch cycle. When guardian
+#   produces a merged verdict, determine_next_role returns None (no next role).
+#   post-task.sh must emit a cycle_complete event and produce no additionalContext
+#   dispatch suggestion. No fallback to eval_state.
 set -euo pipefail
 
 TEST_NAME="test-routing-guardian-completion"
@@ -91,26 +90,28 @@ HOOK_OUTPUT=$(printf '%s' "$HOOK_PAYLOAD" \
 
 echo "  [debug] hook output: '$HOOK_OUTPUT'"
 
-# --- Verify output: guardian merged resumes planner continuation ---
+# --- Verify output: guardian cycle-complete produces no dispatch suggestion ---
+# Acceptable outputs: empty (silent success) or JSON without dispatch suggestion
 if [[ -z "$HOOK_OUTPUT" ]]; then
-    fail "guardian merged should produce AUTO_DISPATCH: planner, got empty output"
+    pass "guardian cycle_complete: no output (silent terminal state)"
 elif echo "$HOOK_OUTPUT" | jq '.' >/dev/null 2>&1; then
     CTX=$(echo "$HOOK_OUTPUT" | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null || true)
-    if [[ "$CTX" == AUTO_DISPATCH:\ planner* ]]; then
-        pass "guardian merged emits AUTO_DISPATCH: planner"
+    if [[ "$CTX" == *"dispatching"* ]]; then
+        fail "guardian must not suggest next dispatch (cycle complete), got: $CTX"
     else
-        fail "guardian merged should dispatch planner, got: $CTX"
+        pass "guardian cycle_complete: no dispatch suggestion in output"
     fi
     if [[ "$CTX" == *"PROCESS ERROR"* ]]; then
         fail "guardian must not emit PROCESS ERROR for valid merged verdict (got: $CTX)"
     else
-        pass "guardian merged: no PROCESS ERROR"
+        pass "guardian cycle_complete: no PROCESS ERROR"
     fi
 else
-    if [[ "$HOOK_OUTPUT" == AUTO_DISPATCH:\ planner* ]]; then
-        pass "guardian merged emits AUTO_DISPATCH: planner"
+    # Non-JSON output — check it isn't a dispatch suggestion
+    if [[ "$HOOK_OUTPUT" == *"dispatching"* ]]; then
+        fail "guardian must not suggest next dispatch, got: $HOOK_OUTPUT"
     else
-        fail "guardian merged should dispatch planner, got: $HOOK_OUTPUT"
+        pass "guardian cycle_complete: no dispatch suggestion"
     fi
 fi
 
@@ -123,25 +124,17 @@ else
     fail "lease released after guardian hook fires — lease still active"
 fi
 
-# --- Verify routing emitted completion audit, not old cycle_complete ---
-AGENT_EVENT_COUNT=$($CC event query --type "agent_complete" 2>/dev/null \
-    | jq -r '.count // 0' 2>/dev/null || echo "0")
-if [[ "$AGENT_EVENT_COUNT" -ge 1 ]]; then
-    pass "agent_complete event emitted"
-else
-    fail "agent_complete event emitted (count=$AGENT_EVENT_COUNT)"
-fi
-
+# --- Verify cycle_complete event was emitted ---
 CYCLE_EVENT_COUNT=$($CC event query --type "cycle_complete" 2>/dev/null \
     | jq -r '.count // 0' 2>/dev/null || echo "0")
-if [[ "$CYCLE_EVENT_COUNT" -eq 0 ]]; then
-    pass "guardian merged did not emit stale cycle_complete event"
+if [[ "$CYCLE_EVENT_COUNT" -ge 1 ]]; then
+    pass "cycle_complete event emitted"
 else
-    fail "guardian merged emitted stale cycle_complete event (count=$CYCLE_EVENT_COUNT)"
+    fail "cycle_complete event emitted (count=$CYCLE_EVENT_COUNT)"
 fi
 
 # --- Results ---
-TOTAL=7
+TOTAL=6
 echo ""
 echo "Results: $((TOTAL - FAILURES))/$TOTAL passed"
 if [[ "$FAILURES" -gt 0 ]]; then

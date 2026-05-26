@@ -20,10 +20,8 @@
 #   "orchestrator should auto-dispatch" from "prompt user for permission".
 #   The signal must flow through the full CLI path so post-task.sh (and any
 #   orchestrator reading hookSpecificOutput) can act on it. This test
-#   exercises each transition class: structured planner completion, interrupted
-#   implementer, reviewer completion variants, guardian continuation and retry,
-#   and the Phase 8 Slice 11 unknown-role silent-exit semantics for the
-#   retired ``tester`` role.
+#   exercises each transition class: fixed-route (planner), interrupted
+#   implementer, tester completion variants, guardian terminal and retry.
 
 set -euo pipefail
 
@@ -84,80 +82,12 @@ submit_completion() {
         --payload "$payload" >/dev/null 2>&1 || true
 }
 
-# Helper: explicitly disable the implementer critic for tests that exercise
-# direct reviewer handoff or interrupted auto_dispatch semantics.
-disable_implementer_critic() {
-    local wt_path="$1"
-    CLAUDE_POLICY_DB="$TEST_DB" CLAUDE_AGENT_ROLE="planner" $CC config set \
-        critic_enabled_implementer_stop false \
-        --scope "project=$wt_path" >/dev/null 2>&1
-}
-
-# Helper: seed the current planner contract path. Planner dispatch is no longer
-# a fixed route; it requires a planner lease, a valid completion record, and an
-# active goal contract for continuation-budget authority.
-seed_planner_next_work_item() {
-    local wf_id="$1"
-    local wt_path="$2"
-    PYTHONPATH="$REPO_ROOT" python3 - "$TEST_DB" "$wt_path" "$wf_id" <<'PYEOF'
-import sqlite3, sys
-from runtime.core import completions, decision_work_registry as dwr, leases
-from runtime.schemas import ensure_schema
-
-db_path, worktree_path, workflow_id = sys.argv[1], sys.argv[2], sys.argv[3]
-conn = sqlite3.connect(db_path)
-conn.row_factory = sqlite3.Row
-ensure_schema(conn)
-dwr.insert_goal(
-    conn,
-    dwr.GoalRecord(
-        goal_id=workflow_id,
-        desired_end_state="Auto-dispatch scenario goal",
-        status="active",
-        autonomy_budget=5,
-    ),
-)
-lease = leases.issue(
-    conn,
-    role="planner",
-    workflow_id=workflow_id,
-    worktree_path=worktree_path,
-)
-completions.submit(
-    conn,
-    lease_id=lease["lease_id"],
-    workflow_id=workflow_id,
-    role="planner",
-    payload={"PLAN_VERDICT": "next_work_item", "PLAN_SUMMARY": "scenario"},
-)
-conn.close()
-PYEOF
-}
-
-# Helper: build a reviewer completion payload with valid REVIEW_FINDINGS_JSON.
-# Uses jq to avoid quote-escape hell when embedding JSON-in-JSON.
-# Usage: make_reviewer_payload <verdict> <severity> <title>
-make_reviewer_payload() {
-    local verdict="$1"
-    local severity="$2"
-    local title="$3"
-    jq -nc \
-        --arg v "$verdict" \
-        --arg s "$severity" \
-        --arg t "$title" \
-        '{
-            REVIEW_VERDICT: $v,
-            REVIEW_HEAD_SHA: "abc123",
-            REVIEW_FINDINGS_JSON: ({findings: [{severity: $s, title: $t, detail: "ok"}]} | tojson)
-        }'
-}
-
 # ==========================================================================
 # Test 1: planner stop → auto_dispatch=true, suggestion starts AUTO_DISPATCH:
+# (planner has no lease requirement — uses a scratch worktree path)
 # ==========================================================================
 WD1="$TMP_DIR/wt-planner"
 mkdir -p "$WD1"
-seed_planner_next_work_item "wf-ad-planner-e2e" "$WD1"
 OUT=$(call_process_stop "planner" "$WD1")
 AUTO=$(printf '%s' "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('auto_dispatch','missing'))" 2>/dev/null || echo "missing")
 CTX=$(printf '%s' "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('hookSpecificOutput',{}).get('additionalContext',''))" 2>/dev/null || true)
@@ -187,7 +117,6 @@ fi
 WD2="$TMP_DIR/wt-impl-complete"
 mkdir -p "$WD2"
 WF2="wf-ad-impl-e2e"
-disable_implementer_critic "$WD2"
 LEASE2=$(issue_lease "implementer" "$WF2" "$WD2")
 if [[ -n "$LEASE2" ]]; then
     submit_completion "implementer" "$LEASE2" "$WF2" '{"IMPL_STATUS":"complete","IMPL_HEAD_SHA":"deadbeef"}'
@@ -216,7 +145,6 @@ fi
 WD3="$TMP_DIR/wt-impl-partial"
 mkdir -p "$WD3"
 WF3="wf-ad-impl-int-e2e"
-disable_implementer_critic "$WD3"
 LEASE3=$(issue_lease "implementer" "$WF3" "$WD3")
 if [[ -n "$LEASE3" ]]; then
     submit_completion "implementer" "$LEASE3" "$WF3" '{"IMPL_STATUS":"partial","IMPL_HEAD_SHA":"deadbeef"}'
@@ -240,100 +168,100 @@ else
 fi
 
 # ==========================================================================
-# Test 4: reviewer stop (ready_for_guardian) → auto_dispatch=true
+# Test 4: tester stop (ready_for_guardian) → auto_dispatch=true
 # ==========================================================================
-WD4="$TMP_DIR/wt-reviewer-rfg"
+WD4="$TMP_DIR/wt-tester-rfg"
 mkdir -p "$WD4"
-WF4="wf-ad-reviewer-e2e"
-LEASE4=$(issue_lease "reviewer" "$WF4" "$WD4")
+WF4="wf-ad-tester-e2e"
+LEASE4=$(issue_lease "tester" "$WF4" "$WD4")
 if [[ -n "$LEASE4" ]]; then
-    REVIEWER_PAYLOAD=$(make_reviewer_payload "ready_for_guardian" "note" "ok")
-    submit_completion "reviewer" "$LEASE4" "$WF4" "$REVIEWER_PAYLOAD"
-    OUT=$(call_process_stop "reviewer" "$WD4")
+    TESTER_PAYLOAD='{"EVAL_VERDICT":"ready_for_guardian","EVAL_TESTS_PASS":"yes","EVAL_NEXT_ROLE":"guardian","EVAL_HEAD_SHA":"abc123"}'
+    submit_completion "tester" "$LEASE4" "$WF4" "$TESTER_PAYLOAD"
+    OUT=$(call_process_stop "tester" "$WD4")
     AUTO=$(printf '%s' "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('auto_dispatch','missing'))" 2>/dev/null || echo "missing")
     CTX=$(printf '%s' "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('hookSpecificOutput',{}).get('additionalContext',''))" 2>/dev/null || true)
 
     if [[ "$AUTO" == "True" ]]; then
-        pass "reviewer (ready_for_guardian): auto_dispatch=true"
+        pass "tester (ready_for_guardian): auto_dispatch=true"
     else
-        fail "reviewer (ready_for_guardian): auto_dispatch=true (got: $AUTO)"
+        fail "tester (ready_for_guardian): auto_dispatch=true (got: $AUTO)"
     fi
 
     if [[ "$CTX" == AUTO_DISPATCH:* ]]; then
-        pass "reviewer (ready_for_guardian): suggestion prefixed AUTO_DISPATCH:"
+        pass "tester (ready_for_guardian): suggestion prefixed AUTO_DISPATCH:"
     else
-        fail "reviewer (ready_for_guardian): suggestion prefixed AUTO_DISPATCH: (got: $CTX)"
+        fail "tester (ready_for_guardian): suggestion prefixed AUTO_DISPATCH: (got: $CTX)"
     fi
 
     if [[ "$CTX" == *"guardian"* ]]; then
-        pass "reviewer (ready_for_guardian): suggestion mentions guardian"
+        pass "tester (ready_for_guardian): suggestion mentions guardian"
     else
-        fail "reviewer (ready_for_guardian): suggestion mentions guardian (got: $CTX)"
+        fail "tester (ready_for_guardian): suggestion mentions guardian (got: $CTX)"
     fi
 else
-    fail "reviewer (ready_for_guardian): could not issue lease — skipping check"
+    fail "tester (ready_for_guardian): could not issue lease — skipping check"
 fi
 
 # ==========================================================================
-# Test 5: reviewer stop (needs_changes) → auto_dispatch=true, next_role=implementer
+# Test 5: tester stop (needs_changes) → auto_dispatch=true, next_role=implementer
 # ==========================================================================
-WD5="$TMP_DIR/wt-reviewer-nc"
+WD5="$TMP_DIR/wt-tester-nc"
 mkdir -p "$WD5"
-WF5="wf-ad-reviewer-nc-e2e"
-LEASE5=$(issue_lease "reviewer" "$WF5" "$WD5")
+WF5="wf-ad-tester-nc-e2e"
+LEASE5=$(issue_lease "tester" "$WF5" "$WD5")
 if [[ -n "$LEASE5" ]]; then
-    NC_PAYLOAD=$(make_reviewer_payload "needs_changes" "blocking" "bug")
-    submit_completion "reviewer" "$LEASE5" "$WF5" "$NC_PAYLOAD"
-    OUT=$(call_process_stop "reviewer" "$WD5")
+    NC_PAYLOAD='{"EVAL_VERDICT":"needs_changes","EVAL_TESTS_PASS":"no","EVAL_NEXT_ROLE":"implementer","EVAL_HEAD_SHA":"abc123"}'
+    submit_completion "tester" "$LEASE5" "$WF5" "$NC_PAYLOAD"
+    OUT=$(call_process_stop "tester" "$WD5")
     AUTO=$(printf '%s' "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('auto_dispatch','missing'))" 2>/dev/null || echo "missing")
     CTX=$(printf '%s' "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('hookSpecificOutput',{}).get('additionalContext',''))" 2>/dev/null || true)
 
     if [[ "$AUTO" == "True" ]]; then
-        pass "reviewer (needs_changes): auto_dispatch=true"
+        pass "tester (needs_changes): auto_dispatch=true"
     else
-        fail "reviewer (needs_changes): auto_dispatch=true (got: $AUTO)"
+        fail "tester (needs_changes): auto_dispatch=true (got: $AUTO)"
     fi
 
     if [[ "$CTX" == AUTO_DISPATCH:* && "$CTX" == *"implementer"* ]]; then
-        pass "reviewer (needs_changes): suggestion prefixed AUTO_DISPATCH: implementer"
+        pass "tester (needs_changes): suggestion prefixed AUTO_DISPATCH: implementer"
     else
-        fail "reviewer (needs_changes): suggestion prefixed AUTO_DISPATCH: implementer (got: $CTX)"
+        fail "tester (needs_changes): suggestion prefixed AUTO_DISPATCH: implementer (got: $CTX)"
     fi
 else
-    fail "reviewer (needs_changes): could not issue lease — skipping check"
+    fail "tester (needs_changes): could not issue lease — skipping check"
 fi
 
 # ==========================================================================
-# Test 6: reviewer stop (blocked_by_plan) → auto_dispatch=true, next_role=planner
+# Test 6: tester stop (blocked_by_plan) → auto_dispatch=true, next_role=planner
 # ==========================================================================
-WD6="$TMP_DIR/wt-reviewer-bp"
+WD6="$TMP_DIR/wt-tester-bp"
 mkdir -p "$WD6"
-WF6="wf-ad-reviewer-bp-e2e"
-LEASE6=$(issue_lease "reviewer" "$WF6" "$WD6")
+WF6="wf-ad-tester-bp-e2e"
+LEASE6=$(issue_lease "tester" "$WF6" "$WD6")
 if [[ -n "$LEASE6" ]]; then
-    BP_PAYLOAD=$(make_reviewer_payload "blocked_by_plan" "blocking" "plan-gap")
-    submit_completion "reviewer" "$LEASE6" "$WF6" "$BP_PAYLOAD"
-    OUT=$(call_process_stop "reviewer" "$WD6")
+    BP_PAYLOAD='{"EVAL_VERDICT":"blocked_by_plan","EVAL_TESTS_PASS":"no","EVAL_NEXT_ROLE":"planner","EVAL_HEAD_SHA":"abc123"}'
+    submit_completion "tester" "$LEASE6" "$WF6" "$BP_PAYLOAD"
+    OUT=$(call_process_stop "tester" "$WD6")
     AUTO=$(printf '%s' "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('auto_dispatch','missing'))" 2>/dev/null || echo "missing")
     CTX=$(printf '%s' "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('hookSpecificOutput',{}).get('additionalContext',''))" 2>/dev/null || true)
 
     if [[ "$AUTO" == "True" ]]; then
-        pass "reviewer (blocked_by_plan): auto_dispatch=true"
+        pass "tester (blocked_by_plan): auto_dispatch=true"
     else
-        fail "reviewer (blocked_by_plan): auto_dispatch=true (got: $AUTO)"
+        fail "tester (blocked_by_plan): auto_dispatch=true (got: $AUTO)"
     fi
 
     if [[ "$CTX" == AUTO_DISPATCH:* && "$CTX" == *"planner"* ]]; then
-        pass "reviewer (blocked_by_plan): suggestion prefixed AUTO_DISPATCH: planner"
+        pass "tester (blocked_by_plan): suggestion prefixed AUTO_DISPATCH: planner"
     else
-        fail "reviewer (blocked_by_plan): suggestion prefixed AUTO_DISPATCH: planner (got: $CTX)"
+        fail "tester (blocked_by_plan): suggestion prefixed AUTO_DISPATCH: planner (got: $CTX)"
     fi
 else
-    fail "reviewer (blocked_by_plan): could not issue lease — skipping check"
+    fail "tester (blocked_by_plan): could not issue lease — skipping check"
 fi
 
 # ==========================================================================
-# Test 7: guardian stop (committed) → auto_dispatch=true, next_role=planner
+# Test 7: guardian stop (committed) → auto_dispatch=false, suggestion empty
 # ==========================================================================
 WD7="$TMP_DIR/wt-guardian-com"
 mkdir -p "$WD7"
@@ -346,16 +274,16 @@ if [[ -n "$LEASE7" ]]; then
     AUTO=$(printf '%s' "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('auto_dispatch','missing'))" 2>/dev/null || echo "missing")
     CTX=$(printf '%s' "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('hookSpecificOutput',{}).get('additionalContext',''))" 2>/dev/null || true)
 
-    if [[ "$AUTO" == "True" ]]; then
-        pass "guardian (committed): auto_dispatch=true"
+    if [[ "$AUTO" == "False" ]]; then
+        pass "guardian (committed): auto_dispatch=false"
     else
-        fail "guardian (committed): auto_dispatch=true (got: $AUTO)"
+        fail "guardian (committed): auto_dispatch=false (got: $AUTO)"
     fi
 
-    if [[ "$CTX" == AUTO_DISPATCH:*planner* ]]; then
-        pass "guardian (committed): suggestion prefixed AUTO_DISPATCH: planner"
+    if [[ -z "$CTX" ]]; then
+        pass "guardian (committed): suggestion empty (terminal state)"
     else
-        fail "guardian (committed): suggestion prefixed AUTO_DISPATCH: planner (got: $CTX)"
+        fail "guardian (committed): suggestion empty — got: $CTX"
     fi
 else
     fail "guardian (committed): could not issue lease — skipping check"
@@ -391,45 +319,25 @@ else
 fi
 
 # ==========================================================================
-# Test 9: unknown role (retired ``tester``) → silent exit
-#
-# Phase 8 Slice 11 retired the ``tester`` role from the runtime. It is no
-# longer in ``_known_types`` in ``dispatch_engine.process_agent_stop``.
-# Any residual stop event carrying ``agent_type="tester"`` must therefore
-# exit silently: auto_dispatch=False, no suggestion, no PROCESS ERROR,
-# no next_role. This is the unknown-role silent-exit invariant from
-# DEC-PHASE8-SLICE11-001.
+# Test 9: error case (tester, no lease) → auto_dispatch=false
 # ==========================================================================
-WD9="$TMP_DIR/wt-unknown-tester"
+WD9="$TMP_DIR/wt-no-lease"
 mkdir -p "$WD9"
+# No lease issued — the tester must produce a PROCESS ERROR
 OUT9=$(call_process_stop "tester" "$WD9")
 AUTO9=$(printf '%s' "$OUT9" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('auto_dispatch','missing'))" 2>/dev/null || echo "missing")
-ERR9=$(printf '%s' "$OUT9" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('error','') or '')" 2>/dev/null || true)
-NEXT9=$(printf '%s' "$OUT9" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('next_role','') or '')" 2>/dev/null || true)
-CTX9=$(printf '%s' "$OUT9" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('hookSpecificOutput',{}).get('additionalContext',''))" 2>/dev/null || true)
+ERR9=$(printf '%s' "$OUT9" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('error',''))" 2>/dev/null || true)
 
 if [[ "$AUTO9" == "False" ]]; then
-    pass "unknown role (retired tester): auto_dispatch=false"
+    pass "error (tester no lease): auto_dispatch=false"
 else
-    fail "unknown role (retired tester): auto_dispatch=false (got: $AUTO9)"
+    fail "error (tester no lease): auto_dispatch=false (got: $AUTO9)"
 fi
 
-if [[ -z "$ERR9" ]]; then
-    pass "unknown role (retired tester): no PROCESS ERROR emitted (silent exit)"
+if [[ "$ERR9" == *"PROCESS ERROR"* ]]; then
+    pass "error (tester no lease): error field contains PROCESS ERROR"
 else
-    fail "unknown role (retired tester): expected empty error, got: $ERR9"
-fi
-
-if [[ -z "$NEXT9" ]]; then
-    pass "unknown role (retired tester): next_role empty (no routing)"
-else
-    fail "unknown role (retired tester): next_role empty (got: $NEXT9)"
-fi
-
-if [[ -z "$CTX9" ]]; then
-    pass "unknown role (retired tester): no additionalContext suggestion"
-else
-    fail "unknown role (retired tester): expected empty additionalContext, got: $CTX9"
+    fail "error (tester no lease): error field contains PROCESS ERROR (got: $ERR9)"
 fi
 
 # ==========================================================================

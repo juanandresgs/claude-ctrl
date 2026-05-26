@@ -5,7 +5,7 @@ Provides durable, deduplicated bug tracking backed by:
   - GitHub Issues via todo.sh as the durable external authority
 
 This module is THE single entry point for recording bugs discovered during
-hook execution, test runs, or evaluator reviews. It ensures:
+hook execution, test runs, or tester reviews. It ensures:
   1. Every bug gets a deterministic fingerprint (dedup key)
   2. Every filing attempt is persisted in SQLite regardless of GitHub success
   3. Failed filings are retryable via retry_failed()
@@ -162,7 +162,7 @@ def qualify(
 
 def _resolve_todo_sh(todo_sh_path: Optional[str]) -> Optional[str]:
     """Return a usable todo.sh path, or None if unavailable."""
-    path = todo_sh_path or os.environ.get("CLAUDE_TODO_SH") or _DEFAULT_TODO_SH
+    path = todo_sh_path or _DEFAULT_TODO_SH
     if path and os.path.isfile(path) and os.access(path, os.X_OK):
         return path
     return None

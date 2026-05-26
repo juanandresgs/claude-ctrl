@@ -5,7 +5,7 @@ set -euo pipefail
 # PreCompact hook
 #
 # Two outputs:
-#   1. SQLite preserved_contexts row (survives compaction, read by session-init.sh)
+#   1. Persistent file: .claude/.preserved-context (survives compaction, read by session-init.sh)
 #   2. additionalContext: injected into the system message before compaction
 #
 # The additionalContext includes a directive instructing Claude to generate
@@ -16,7 +16,6 @@ source "$(dirname "$0")/log.sh"
 source "$(dirname "$0")/context-lib.sh"
 
 PROJECT_ROOT=$(detect_project_root)
-SESSION_ID=$(canonical_session_id)
 CONTEXT_PARTS=()
 
 # --- Git state (via shared library) ---
@@ -46,11 +45,10 @@ fi
 
 # --- Session file changes ---
 get_session_changes "$PROJECT_ROOT"
-CHANGES_TEXT="${SESSION_CHANGES_TEXT:-}"
 
-if [[ -n "$CHANGES_TEXT" ]]; then
-    FILE_COUNT=$(printf '%s\n' "$CHANGES_TEXT" | sort -u | wc -l | tr -d ' ')
-    FILE_LIST=$(printf '%s\n' "$CHANGES_TEXT" | sort -u | head -5 | xargs -I{} basename {} | paste -sd', ' -)
+if [[ -n "$SESSION_FILE" && -f "$SESSION_FILE" ]]; then
+    FILE_COUNT=$(sort -u "$SESSION_FILE" | wc -l | tr -d ' ')
+    FILE_LIST=$(sort -u "$SESSION_FILE" | head -5 | xargs -I{} basename {} | paste -sd', ' -)
     REMAINING=$((FILE_COUNT - 5))
     if [[ "$REMAINING" -gt 0 ]]; then
         CONTEXT_PARTS+=("Modified this session: $FILE_LIST (+$REMAINING more)")
@@ -59,7 +57,7 @@ if [[ -n "$CHANGES_TEXT" ]]; then
     fi
 
     # Full paths for context (written to file, not displayed)
-    FULL_PATHS=$(printf '%s\n' "$CHANGES_TEXT" | sort -u | head -10)
+    FULL_PATHS=$(sort -u "$SESSION_FILE" | head -10)
 
     # --- Key @decisions made this session ---
     DECISIONS_FOUND=()
@@ -69,7 +67,7 @@ if [[ -n "$CHANGES_TEXT" ]]; then
         if [[ -n "$decision_line" ]]; then
             DECISIONS_FOUND+=("$decision_line ($(basename "$file"))")
         fi
-    done < <(printf '%s\n' "$CHANGES_TEXT" | sort -u)
+    done < <(sort -u "$SESSION_FILE")
 
     if [[ ${#DECISIONS_FOUND[@]} -gt 0 ]]; then
         DECISIONS_LINE=$(printf '%s, ' "${DECISIONS_FOUND[@]:0:5}")
@@ -108,14 +106,15 @@ if [[ -f "$AUDIT_LOG" && -s "$AUDIT_LOG" ]]; then
     done < <(tail -5 "$AUDIT_LOG")
 fi
 
-# --- Persist handoff in state.db ---
-# This row survives compaction and is read by session-init.sh on the
+# --- Write persistent file ---
+# This file survives compaction and is read by session-init.sh on the
 # SessionStart(compact) event. Belt-and-suspenders: even if the
 # additionalContext is lost during compaction, session-init.sh can
-# re-inject this data without a project-local flatfile authority.
+# re-inject this data.
+PRESERVE_FILE="${PROJECT_ROOT}/.claude/.preserved-context"
 if [[ ${#CONTEXT_PARTS[@]} -gt 0 ]]; then
-    PRESERVED_TEXT=$(
-        {
+    mkdir -p "$PROJECT_ROOT/.claude"
+    {
         echo "# Preserved context from pre-compaction ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
         printf '%s\n' "${CONTEXT_PARTS[@]}"
         # Include full file paths for re-navigation
@@ -124,11 +123,7 @@ if [[ ${#CONTEXT_PARTS[@]} -gt 0 ]]; then
             echo "# Full paths of session-modified files:"
             echo "$FULL_PATHS"
         fi
-        }
-    )
-    printf '%s' "$PRESERVED_TEXT" | cc_policy preserved-context save \
-        --project-root "$PROJECT_ROOT" \
-        --session-id "$SESSION_ID" >/dev/null 2>&1 || true
+    } > "$PRESERVE_FILE"
 fi
 
 # --- Output additionalContext ---

@@ -1,22 +1,6 @@
 #!/usr/bin/env bash
-# test-guard-evaluator-gate-allows.sh: proves guard.sh Check 10 allows
-# git commit when evaluation_state == "ready_for_guardian" AND head_sha
-# matches the current HEAD.
-#
-# Gates guard.sh checks for a commit to succeed:
-#   Check 3:  WHO — guardian role active
-#   Check 4:  not on main/master
-#   Check 9:  .test-status == pass
-#   Check 10: evaluation_state == ready_for_guardian AND head_sha matches HEAD
-#   Check 12: workflow binding + scope exists
-#
-# @decision DEC-EVAL-003
-# @title guard.sh Check 10 gates on evaluation_state, not proof_state
-# @status accepted
-# @rationale This test proves the allow path for the new evaluation gate.
-#   All five checks must be satisfied simultaneously; satisfying four of five
-#   would give a false pass signal. The full sequence mirrors what a real
-#   Guardian agent does before committing.
+# v6 landing gate allow path: Guardian commit is allowed only when the
+# v6_landing_readiness aggregate is ready and HEAD-aligned.
 set -euo pipefail
 
 TEST_NAME="test-guard-evaluator-gate-allows"
@@ -27,67 +11,48 @@ TMP_DIR="$REPO_ROOT/tmp/$TEST_NAME-$$"
 TEST_DB="$TMP_DIR/.claude/state.db"
 BRANCH="feature/eval-allows-test"
 WF_ID="feature-eval-allows-test"
-
-cleanup() { rm -rf "$TMP_DIR"; }
-trap cleanup EXIT
+trap 'rm -rf "$TMP_DIR"' EXIT
 
 mkdir -p "$TMP_DIR/.claude"
-git -C "$TMP_DIR" init -q
-git -C "$TMP_DIR" config user.email "t@t.com"
-git -C "$TMP_DIR" config user.name "T"
-git -C "$TMP_DIR" commit --allow-empty -m "init" -q
+git -C "$TMP_DIR" init -q -b main 2>/dev/null || { git -C "$TMP_DIR" init -q; git -C "$TMP_DIR" checkout -b main -q 2>/dev/null || true; }
+git -C "$TMP_DIR" config user.email t@t.com
+git -C "$TMP_DIR" config user.name T
+git -C "$TMP_DIR" commit --allow-empty -m init -q
 git -C "$TMP_DIR" checkout -b "$BRANCH" -q
-
-# Get the actual HEAD sha for this repo
 CURRENT_HEAD=$(git -C "$TMP_DIR" rev-parse HEAD)
 
-# Gate 1: schema + guardian:land role
-CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
-CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian:land" --project-root "$TMP_DIR" >/dev/null 2>&1
+CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null
+CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set agent-test guardian --project-root "$TMP_DIR" >/dev/null
+CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" workflow bind "$WF_ID" "$TMP_DIR" "$BRANCH" >/dev/null
+CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" workflow scope-set "$WF_ID" --allowed '["*"]' --forbidden '[]' >/dev/null
+CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" test-state set pass --project-root "$TMP_DIR" --head-sha "$CURRENT_HEAD" --passed 1 --total 1 >/dev/null
 
-# Gate 2: test status = pass via runtime (policy engine reads SQLite)
-CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-    test-state set pass --project-root "$TMP_DIR" --passed 1 --total 1 >/dev/null 2>&1
-
-# Gate 3: evaluation_state = ready_for_guardian with matching head_sha
-CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-    evaluation set "$WF_ID" "ready_for_guardian" --head-sha "$CURRENT_HEAD" >/dev/null 2>&1
-
-# Gate 4: workflow binding + scope (Check 12)
-CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-    workflow bind "$WF_ID" "$TMP_DIR" "$BRANCH" >/dev/null 2>&1
-CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-    workflow scope-set "$WF_ID" \
-    --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1
-
-# Gate 5 (TKT-STAB-A3): active lease required for all git ops in enforced projects
-CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-    lease issue-for-dispatch "guardian" \
-    --workflow-id "$WF_ID" \
-    --worktree-path "$TMP_DIR" \
-    --branch "$BRANCH" \
-    --allowed-ops '["routine_local","high_risk"]' >/dev/null 2>&1
+REVIEWER_JSON=$(CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" stage run-create --workflow-id "$WF_ID" --stage-id reviewer --worktree-path "$TMP_DIR")
+REVIEWER_RUN=$(printf '%s' "$REVIEWER_JSON" | jq -r '.stage_run.id')
+REVIEW_PAYLOAD=$(jq -nc --arg run "$REVIEWER_RUN" --arg sha "$CURRENT_HEAD" '{stage_run_id:$run,stage_id:"reviewer",verdict:"ready_for_guardian",summary:"reviewed",head_sha:$sha,findings:[]}')
+REVIEW_RESULT=$(CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" stage result-submit "$REVIEWER_RUN" --payload "$REVIEW_PAYLOAD")
+GUARDIAN_RUN=$(printf '%s' "$REVIEW_RESULT" | jq -r '.next_stage_run.id')
+LEASE_META=$(jq -nc --arg run "$GUARDIAN_RUN" '{stage_run_id:$run}')
+CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" lease issue-for-dispatch guardian \
+    --workflow-id "$WF_ID" --worktree-path "$TMP_DIR" --branch "$BRANCH" \
+    --allowed-ops '["routine_local","high_risk"]' --metadata "$LEASE_META" >/dev/null
+READINESS=$(CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" stage landing-ready "$GUARDIAN_RUN")
+[[ $(printf '%s' "$READINESS" | jq -r '.readiness.status') == ready ]]
 
 CMD="git -C \"$TMP_DIR\" commit --allow-empty -m 'test commit'"
-PAYLOAD=$(jq -n --arg t "Bash" --arg c "$CMD" --arg w "$TMP_DIR" \
-    '{tool_name:$t,tool_input:{command:$c},cwd:$w}')
-
-output=$(printf '%s' "$PAYLOAD" \
-    | CLAUDE_PROJECT_DIR="$TMP_DIR" CLAUDE_POLICY_DB="$TEST_DB" \
-      CLAUDE_RUNTIME_ROOT="$RUNTIME_ROOT" "$HOOK" 2>/dev/null) || {
+PAYLOAD=$(jq -n --arg t Bash --arg c "$CMD" --arg w "$TMP_DIR" '{tool_name:$t,tool_input:{command:$c},cwd:$w}')
+output=$(printf '%s' "$PAYLOAD" | CLAUDE_PROJECT_DIR="$TMP_DIR" CLAUDE_POLICY_DB="$TEST_DB" CLAUDE_RUNTIME_ROOT="$RUNTIME_ROOT" "$HOOK" 2>/dev/null) || {
     echo "FAIL: $TEST_NAME — hook exited nonzero"
     exit 1
 }
 
-# Allow = empty output or JSON without deny
 if [[ -n "$output" ]]; then
     decision=$(printf '%s' "$output" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null || echo "")
-    if [[ "$decision" == "deny" ]]; then
+    if [[ "$decision" == deny ]]; then
         reason=$(printf '%s' "$output" | jq -r '.hookSpecificOutput.permissionDecisionReason // empty' 2>/dev/null || echo "")
         echo "FAIL: $TEST_NAME — unexpected deny: $reason"
         exit 1
     fi
 fi
 
-echo "PASS: $TEST_NAME"
-exit 0
+echo "PASS: <REDACTED>"

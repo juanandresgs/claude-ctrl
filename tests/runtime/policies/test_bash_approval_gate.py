@@ -1,12 +1,12 @@
 """Unit tests for bash_approval_gate policy.
 
-Exercises one-shot approval token requirement for approval-gated git
-operations (DEC-PE-W3-011). Straightforward push is intentionally excluded.
-Production trigger: PreToolUse Bash hook — git rebase, reset (non-hard),
+Exercises one-shot approval token requirement for high-risk and admin_recovery
+git operations (DEC-PE-W3-011).
+Production trigger: PreToolUse Bash hook — git push, rebase, reset (non-hard),
 merge --abort, reset --merge, merge --no-ff.
 
 The policy always returns a deny with effects={"check_and_consume_approval": ...}
-for approval-gated high-risk/admin_recovery ops. The CLI handler is responsible for checking
+for high-risk/admin_recovery ops. The CLI handler is responsible for checking
 whether an approval token exists and overriding the deny if so.
 
 @decision DEC-PE-W3-TEST-011
@@ -29,8 +29,8 @@ from tests.runtime.policies.conftest import make_context, make_request
 # ---------------------------------------------------------------------------
 
 
-def test_op_type_push_not_approval_gated():
-    assert _resolve_op_type("git push origin feature/foo") is None
+def test_op_type_push():
+    assert _resolve_op_type("git push origin feature/foo") == "push"
 
 
 def test_op_type_rebase():
@@ -53,11 +53,6 @@ def test_op_type_non_ff_merge():
     assert _resolve_op_type("git merge --no-ff feature/bar") == "non_ff_merge"
 
 
-def test_op_type_plumbing():
-    assert _resolve_op_type("git update-ref refs/heads/main HEAD") == "plumbing"
-    assert _resolve_op_type("git commit-tree HEAD^{tree} -p HEAD") == "plumbing"
-
-
 def test_op_type_unknown_returns_none():
     assert _resolve_op_type("git status") is None
     assert _resolve_op_type("git commit -m 'fix'") is None
@@ -68,11 +63,17 @@ def test_op_type_unknown_returns_none():
 # ---------------------------------------------------------------------------
 
 
-def test_push_not_gated():
+def test_push_requires_approval():
     ctx = make_context()
     req = make_request("git push origin feature/done", context=ctx)
     decision = check(req)
-    assert decision is None
+    assert decision is not None
+    assert decision.action == "deny"
+    assert decision.policy_name == "bash_approval_gate"
+    assert decision.effects is not None
+    payload = decision.effects.get("check_and_consume_approval", {})
+    assert payload.get("op_type") == "push"
+    assert "workflow_id" in payload
 
 
 def test_rebase_requires_approval():
@@ -104,90 +105,6 @@ def test_non_ff_merge_requires_approval():
     assert decision.action == "deny"
     payload = decision.effects.get("check_and_consume_approval", {})
     assert payload.get("op_type") == "non_ff_merge"
-
-
-def test_non_ff_merge_allowed_by_work_item_autoland_grant():
-    ctx = make_context(
-        actor_role="guardian:land",
-        work_item_id="wi-test",
-        landing_grant={
-            "work_item_id": "wi-test",
-            "workflow_id": "feature-test",
-            "can_autoland": True,
-            "merge_strategy": "no_ff",
-            "requires_user_approval": [
-                "rebase",
-                "reset",
-                "force_push",
-                "destructive_cleanup",
-                "plumbing",
-                "admin_recovery",
-            ],
-        },
-    )
-    req = make_request("git merge --no-ff feature/bar", context=ctx)
-    decision = check(req)
-    assert decision is None
-
-
-def test_non_ff_merge_autoland_grant_can_still_require_user_approval():
-    ctx = make_context(
-        actor_role="guardian:land",
-        work_item_id="wi-test",
-        landing_grant={
-            "work_item_id": "wi-test",
-            "workflow_id": "feature-test",
-            "can_autoland": True,
-            "merge_strategy": "no_ff",
-            "requires_user_approval": ["non_ff_merge"],
-        },
-    )
-    req = make_request("git merge --no-ff feature/bar", context=ctx)
-    decision = check(req)
-    assert decision is not None
-    assert decision.action == "deny"
-
-
-def test_non_ff_merge_string_required_ops_still_requires_approval():
-    ctx = make_context(
-        actor_role="guardian:land",
-        work_item_id="wi-test",
-        landing_grant={
-            "work_item_id": "wi-test",
-            "workflow_id": "feature-test",
-            "can_autoland": True,
-            "merge_strategy": "no_ff",
-            "requires_user_approval": "non_ff_merge",
-        },
-    )
-    req = make_request("git merge --no-ff feature/bar", context=ctx)
-    decision = check(req)
-    assert decision is not None
-    assert decision.action == "deny"
-
-
-def test_plumbing_requires_approval():
-    ctx = make_context(actor_role="guardian:land")
-    req = make_request("git update-ref refs/heads/main HEAD", context=ctx)
-    decision = check(req)
-    assert decision is not None
-    assert decision.action == "deny"
-    payload = decision.effects.get("check_and_consume_approval", {})
-    assert payload.get("op_type") == "plumbing"
-
-
-def test_multiline_commit_tree_update_ref_requires_plumbing_approval():
-    ctx = make_context(actor_role="guardian:land")
-    req = make_request(
-        'COMMIT=$(git commit-tree "$TREE" -p "$PARENT")\n'
-        'git update-ref refs/heads/main "$COMMIT"',
-        context=ctx,
-    )
-    decision = check(req)
-    assert decision is not None
-    assert decision.action == "deny"
-    payload = decision.effects.get("check_and_consume_approval", {})
-    assert payload.get("op_type") == "plumbing"
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +139,7 @@ def test_reset_merge_requires_approval():
 
 def test_reason_contains_grant_guidance():
     ctx = make_context()
-    req = make_request("git rebase main", context=ctx)
+    req = make_request("git push origin feature/done", context=ctx)
     decision = check(req)
     assert decision is not None
     assert "cc-policy approval grant" in decision.reason

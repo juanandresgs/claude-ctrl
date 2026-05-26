@@ -5,7 +5,7 @@ set -euo pipefail
 # SubagentStart hook — matcher: (all agent types)
 #
 # Injects current project state into every subagent so Planner,
-# Implementer, Guardian, and Reviewer agents always have fresh context:
+# Implementer, Tester, and Guardian agents always have fresh context:
 #   - Current git branch and dirty state
 #   - MASTER_PLAN.md existence and active phase
 #   - Active worktrees
@@ -18,13 +18,9 @@ source "$(dirname "$0")/log.sh"
 source "$(dirname "$0")/context-lib.sh"
 
 HOOK_INPUT=$(read_input)
-seed_project_dir_from_hook_payload_cwd "$HOOK_INPUT"
 AGENT_TYPE=$(echo "$HOOK_INPUT" | jq -r '.agent_type // empty' 2>/dev/null)
 SESSION_ID=$(echo "$HOOK_INPUT" | jq -r '.session_id // empty' 2>/dev/null || echo "")
-# DEC-CLAUDEX-SA-IDENTITY-001: payload agent_id is the sole authority for marker+lease seating.
-# Shell PID (agent-$$) is per-process and unreachable from downstream cc-policy context role
-# resolvers. Extract once here; all seating calls below use this variable exclusively.
-_PAYLOAD_AGENT_ID=$(echo "$HOOK_INPUT" | jq -r '.agent_id // empty' 2>/dev/null || echo "")
+PAYLOAD_AGENT_ID=$(echo "$HOOK_INPUT" | jq -r '.agent_id // empty' 2>/dev/null || echo "")
 
 PROJECT_ROOT=$(detect_project_root)
 CONTEXT_PARTS=()
@@ -38,234 +34,157 @@ get_plan_status "$PROJECT_ROOT"
 # Must resolve here too so agent-start reaches the in-worktree CLI.
 # ---------------------------------------------------------------------------
 _HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
-_LOCAL_RUNTIME_ROOT="$_HOOK_DIR/../runtime"
+_LOCAL_RUNTIME_CLI="$_HOOK_DIR/../runtime/cli.py"
 _local_cc_policy() {
-    # @decision DEC-CLAUDEX-SA-MARKER-RELIABILITY-001
-    # Title: SubagentStart marker-seating is authoritative and failures are observable
-    # Status: accepted — DB routing now delegates to _resolve_policy_db (shared helper).
-    # Rationale: CLAUDE_POLICY_DB must be deterministically routed to the
-    #   in-project state.db regardless of whether CLAUDE_PROJECT_DIR is present
-    #   in the SubagentStart env invocation. The 3-tier fallback logic (CLAUDE_POLICY_DB
-    #   → CLAUDE_PROJECT_DIR → git rev-parse) now lives exclusively in _resolve_policy_db
-    #   (DEC-CLAUDEX-SA-UNIFIED-DB-ROUTING-001) so both the carrier consume block and
-    #   the marker-seating CLI call share the same authoritative path resolution.
-    #   Any seating failure is captured and emitted as a CONTEXT_PARTS breadcrumb.
-    #   Extends DEC-CLAUDEX-SA-IDENTITY-001.
-    # Chain: _resolve_policy_db → CLAUDE_POLICY_DB → cc-policy dispatch agent-start
-    #   → agent_markers → context role
-    if [[ -z "${CLAUDE_POLICY_DB:-}" ]]; then
-        _resolve_policy_db >/dev/null
+    if [[ -n "${CLAUDE_PROJECT_DIR:-}" && -z "${CLAUDE_POLICY_DB:-}" ]]; then
+        export CLAUDE_POLICY_DB="$CLAUDE_PROJECT_DIR/.claude/state.db"
     fi
-    cc_policy_local_runtime "$_LOCAL_RUNTIME_ROOT" "$@"
+    python3 "$_LOCAL_RUNTIME_CLI" "$@"
 }
 
-_authority_python() {
-    local mode="$1"
-    local value="$2"
-    "$(_resolve_runtime_python)" - "$_HOOK_DIR/.." "$mode" "$value" <<'PY'
+_ticket_from_subagent_transcript() {
+    local parent_transcript="$1"
+    local child_agent_id="$2"
+    [[ -n "$parent_transcript" && -n "$child_agent_id" ]] || return 0
+    local parent_dir child_transcript
+    parent_dir="$(dirname "$parent_transcript")"
+    child_transcript="$parent_dir/subagents/agent-${child_agent_id}.jsonl"
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        [[ -s "$child_transcript" ]] && break
+        sleep 0.1
+    done
+    [[ -s "$child_transcript" ]] || return 0
+    python3 - "$child_transcript" <<'PY'
+import json
 import sys
-repo_root, mode, value = sys.argv[1:4]
-sys.path.insert(0, repo_root)
-from runtime.core import authority_registry as ar
-from runtime.core import stage_packet as sp
 
-if mode == "dispatch_subagent_type_for_stage":
-    result = ar.dispatch_subagent_type_for_stage(value)
-elif mode == "canonical_dispatch_subagent_type":
-    result = ar.canonical_dispatch_subagent_type(value)
-elif mode == "canonical_stage_id":
-    result = ar.canonical_stage_id(value)
-elif mode == "lease_role_for_stage":
-    result = ar.lease_role_for_stage(value)
-elif mode == "dispatch_bootstrap_guidance":
-    result = sp.dispatch_bootstrap_guidance(value or None)
-else:
-    raise SystemExit(2)
-
-print("" if result is None else result)
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as fh:
+    for raw in fh:
+        try:
+            item = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if item.get("type") != "user":
+            continue
+        content = (item.get("message") or {}).get("content", "")
+        if isinstance(content, str):
+            print(content)
+            raise SystemExit(0)
+        if isinstance(content, list):
+            parts = []
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    parts.append(str(part.get("text") or ""))
+            print("\n".join(parts))
+            raise SystemExit(0)
+        break
 PY
 }
 
-_emit_context_only() {
-    local message="$1"
-    local escaped
-    escaped=$(printf '%s' "$message" | jq -Rs .)
-    cat <<EOF
-{
-  "hookSpecificOutput": {
-    "hookEventName": "SubagentStart",
-    "additionalContext": $escaped
-  }
-}
-EOF
-    exit 0
+_tool_use_id_from_subagent_meta() {
+    local parent_transcript="$1"
+    local child_agent_id="$2"
+    [[ -n "$parent_transcript" && -n "$child_agent_id" ]] || return 0
+    local parent_dir meta_path
+    parent_dir="$(dirname "$parent_transcript")"
+    meta_path="$parent_dir/subagents/agent-${child_agent_id}.meta.json"
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        [[ -s "$meta_path" ]] && break
+        sleep 0.1
+    done
+    [[ -s "$meta_path" ]] || return 0
+    jq -r '.toolUseId // .tool_use_id // empty' "$meta_path" 2>/dev/null || true
 }
 
-_fail_attempt() {
-    local reason="$1"
-    local attempt_id="${2:-}"
-    if [[ -n "$attempt_id" ]]; then
-        _local_cc_policy dispatch attempt-fail \
-            --attempt-id "$attempt_id" \
-            --reason "$reason" \
-            >/dev/null 2>&1 || true
+_marker_agent_id() {
+    if [[ -n "${PAYLOAD_AGENT_ID:-}" ]]; then
+        printf 'agent-%s\n' "$PAYLOAD_AGENT_ID"
+    else
+        printf 'agent-%s\n' "$$"
     fi
 }
 
-# ---------------------------------------------------------------------------
-# Carrier consume: augment HOOK_INPUT with contract fields written by
-# pre-agent.sh (PreToolUse:Agent) into pending_agent_requests
-# (DEC-CLAUDEX-SA-CARRIER-001).
-#
-# Atomically reads and deletes the row keyed by (session_id, agent_type).
-# When the row exists, the six contract fields are merged into HOOK_INPUT
-# so the _HAS_CONTRACT check below sees them as payload-native fields and
-# the runtime-first path fires in production — not just in tests.
-# ---------------------------------------------------------------------------
-if [[ -n "$SESSION_ID" && -n "$AGENT_TYPE" ]]; then
-    _CARRIER_MODULE="$_HOOK_DIR/../runtime/core/pending_agent_requests.py"
-    # Use shared 3-tier resolver — replaces former 2-tier (CLAUDE_POLICY_DB →
-    # CLAUDE_PROJECT_DIR) that silently skipped the consume when both were absent.
-    # (DEC-CLAUDEX-SA-UNIFIED-DB-ROUTING-001)
-    _CARRIER_DB="$(_resolve_policy_db)"
-    if [[ -n "$_CARRIER_DB" && -f "$_CARRIER_MODULE" ]]; then
-        _CARRIER_AGENT_TYPE=$(_authority_python "canonical_dispatch_subagent_type" "${AGENT_TYPE:-}" 2>/dev/null || echo "")
-        [[ -z "$_CARRIER_AGENT_TYPE" ]] && _CARRIER_AGENT_TYPE="$AGENT_TYPE"
-        _CARRIER_JSON=$("$(_resolve_runtime_python)" "$_CARRIER_MODULE" consume "$_CARRIER_DB" "$SESSION_ID" "$_CARRIER_AGENT_TYPE" 2>/dev/null || echo "")
-        if [[ -n "$_CARRIER_JSON" ]]; then
-            _CARRIER_ATTEMPT_ID=$(printf '%s' "$_CARRIER_JSON" | jq -r '.attempt_id // empty' 2>/dev/null || echo "")
-            _CARRIER_GUARDIAN_MODE=$(printf '%s' "$_CARRIER_JSON" | jq -r '
-              (.contract_json // "{}" | fromjson? // {} | .guardian_mode // empty)
-            ' 2>/dev/null || echo "")
-            if [[ "$_CARRIER_AGENT_TYPE" == "guardian" && "$_CARRIER_GUARDIAN_MODE" == "admission" ]]; then
-                HOOK_INPUT=$(echo "$HOOK_INPUT" | jq \
-                    --arg attempt_id "$_CARRIER_ATTEMPT_ID" \
-                    '. + {guardian_mode:"admission", admission_attempt_id:$attempt_id}')
-            else
-                HOOK_INPUT=$(echo "$HOOK_INPUT" | jq --argjson c "$_CARRIER_JSON" '. + $c')
-                # Claim delivery only when the carrier-backed correlation path matched
-                # (DEC-CLAUDEX-HOOK-WIRING-001). A bare SubagentStart with no carrier
-                # row must NOT claim a pending attempt — there is no PreToolUse proof.
-                # Best-effort: never blocks subagent start.
-                _local_cc_policy dispatch attempt-claim \
-                    --session-id "$SESSION_ID" \
-                    --agent-type "$_CARRIER_AGENT_TYPE" \
-                    ${_CARRIER_ATTEMPT_ID:+--attempt-id "$_CARRIER_ATTEMPT_ID"} \
-                    ${_PAYLOAD_AGENT_ID:+--agent-id "$_PAYLOAD_AGENT_ID"} \
-                    >/dev/null 2>&1 || true
+_start_role_marker() {
+    local role="$1"
+    local workflow_id="${2:-}"
+    local marker_id
+    marker_id=$(_marker_agent_id)
+    _local_cc_policy dispatch agent-start \
+        "$role" "$marker_id" \
+        --project-root "$PROJECT_ROOT" \
+        ${workflow_id:+--workflow-id "$workflow_id"} \
+        >/dev/null 2>&1 || true
+}
+
+# v6 runtime-ticket context path. Canonical seats must have been claimed by
+# pre-agent.sh before the harness spawned the child. No canonical role may fall
+# back to user-visible ticket ceremony; the runtime ledger is best-effort
+# context, while SubagentStart's marker is the write-policy identity authority.
+case "${AGENT_TYPE:-}" in
+    planner|implementer|critic|reviewer|guardian)
+        V6_CLAIM_TOKEN=$(printf '%s' "$HOOK_INPUT" | jq -r '.v6_claim_token // .claim_token // empty' 2>/dev/null || echo "")
+        V6_TICKET_ID=$(printf '%s' "$HOOK_INPUT" | jq -r '.ticket_id // empty' 2>/dev/null || echo "")
+        PARENT_TRANSCRIPT=$(printf '%s' "$HOOK_INPUT" | jq -r '.transcript_path // empty' 2>/dev/null || echo "")
+        if [[ -z "$V6_TICKET_ID" ]]; then
+            CHILD_PROMPT=$(_ticket_from_subagent_transcript "$PARENT_TRANSCRIPT" "$PAYLOAD_AGENT_ID" || true)
+            if [[ -n "$CHILD_PROMPT" ]]; then
+                V6_PARSE=$(printf '%s' "$CHILD_PROMPT" | _local_cc_policy stage ticket-parse --stdin 2>/dev/null || true)
+                V6_TICKET_ID=$(printf '%s' "${V6_PARSE:-}" | jq -r '.ticket_id // empty' 2>/dev/null || echo "")
             fi
         fi
-    fi
-fi
-
-_HAS_CONTRACT=$(echo "$HOOK_INPUT" | jq -r '
-  if (has("workflow_id") and has("stage_id") and has("goal_id") and
-      has("work_item_id") and has("decision_scope") and has("generated_at"))
-  then "yes" else "no" end
-' 2>/dev/null || echo "no")
-
-_CANONICAL_SUBAGENT_TYPE=$(_authority_python "canonical_dispatch_subagent_type" "${AGENT_TYPE:-}" 2>/dev/null || echo "")
-_EFFECTIVE_STAGE_ID=""
-_EFFECTIVE_LEASE_ROLE="$AGENT_TYPE"
-_MARKER_ROLE="$AGENT_TYPE"
-_EXPECTED_SUBAGENT_TYPE=""
-_GUARDIAN_ADMISSION_MODE=$(echo "$HOOK_INPUT" | jq -r '
-  if (.agent_type // "") == "guardian" and (.guardian_mode // "") == "admission"
-  then "yes" else "no" end
-' 2>/dev/null || echo "no")
-
-if [[ "$_HAS_CONTRACT" == "yes" ]]; then
-    _EFFECTIVE_STAGE_ID=$(echo "$HOOK_INPUT" | jq -r '.stage_id // empty' 2>/dev/null || echo "")
-    _EXPECTED_SUBAGENT_TYPE=$(_authority_python "dispatch_subagent_type_for_stage" "$_EFFECTIVE_STAGE_ID" 2>/dev/null || echo "")
-    if [[ -n "$_EXPECTED_SUBAGENT_TYPE" && "$AGENT_TYPE" != "$_EXPECTED_SUBAGENT_TYPE" ]]; then
-        _fail_attempt "stage_subagent_type_mismatch" "${_CARRIER_ATTEMPT_ID:-}"
-        _emit_context_only "Runtime dispatch contract rejected: stage '${_EFFECTIVE_STAGE_ID}' requires subagent_type '${_EXPECTED_SUBAGENT_TYPE}', but the harness started '${AGENT_TYPE}'. This launch bypasses the repo-owned stage prompt and is not trusted."
-    fi
-    if [[ -n "$_EXPECTED_SUBAGENT_TYPE" ]]; then
-        _LEASE_ROLE_FOR_STAGE=$(_authority_python "lease_role_for_stage" "$_EFFECTIVE_STAGE_ID" 2>/dev/null || echo "")
-        _EFFECTIVE_LEASE_ROLE="${_LEASE_ROLE_FOR_STAGE:-$_EXPECTED_SUBAGENT_TYPE}"
-        _MARKER_ROLE="$_EFFECTIVE_STAGE_ID"
-    fi
-elif [[ "$_GUARDIAN_ADMISSION_MODE" == "yes" ]]; then
-    _emit_context_only "Guardian mode=admission: use only the Guardian prompt's Admission Mode section. This is a non-canonical pre-workflow custody decision; do not provision worktrees, land git, create completion records, or write source. Run cc-policy admission classify/apply as needed and end with ADMISSION_* trailers."
-elif [[ -n "$_CANONICAL_SUBAGENT_TYPE" ]]; then
-    # A8: canonical seat without a carrier-backed contract is a bypass attempt.
-    # If the subagent_type resolves to a canonical dispatch seat but the six-field
-    # contract is NOT present (carrier row was missing, or the row had missing/empty
-    # required fields so _HAS_CONTRACT is "no"), deny fail-closed via additionalContext
-    # with reason canonical_seat_no_carrier_contract.  Do NOT fall through to the
-    # shell guidance path — that would silently misguide a forged/stripped launch.
-    # (DEC-CLAUDEX-AGENT-CONTRACT-AUTHENTICITY-A8-001)
-    _BOOTSTRAP_GUIDANCE=$(_authority_python "dispatch_bootstrap_guidance" "$AGENT_TYPE" 2>/dev/null || echo "")
-    _emit_context_only "BLOCKED: canonical dispatch seat '${AGENT_TYPE}' reached SubagentStart without a carrier-backed contract (canonical_seat_no_carrier_contract). pre-agent.sh must write a pending_agent_requests row before the harness starts this seat. Either the orchestrator bypassed pre-agent.sh, or the carrier write failed. ${_BOOTSTRAP_GUIDANCE}"
-fi
-
-# ---------------------------------------------------------------------------
-# Prompt-pack preflight: compile before marker seating or lease claiming.
-#
-# A failed SubagentStart compile is recorded on the carrier attempt as "failed";
-# it never seats a marker, claims a lease, or blocks the parent session.
-# The successful envelope is held until after marker/lease seating so happy-path
-# behavior still includes the current runtime context.
-# ---------------------------------------------------------------------------
-_RUNTIME_FIRST_STDOUT=""
-if [[ "$_HAS_CONTRACT" == "yes" ]]; then
-    _PP_PAYLOAD=$(echo "$HOOK_INPUT" | jq -c \
-        '{workflow_id, stage_id, goal_id, work_item_id, decision_scope, generated_at}')
-    _RT_STDERR_FILE=$(mktemp)
-    _RT_STDOUT=$(_local_cc_policy prompt-pack subagent-start \
-        --payload "$_PP_PAYLOAD" 2>"$_RT_STDERR_FILE") && _RT_RC=0 || _RT_RC=$?
-    _RT_STDERR=$(cat "$_RT_STDERR_FILE"); rm -f "$_RT_STDERR_FILE"
-
-    _RT_HEALTHY=$(echo "$_RT_STDOUT" | jq -r '.healthy // "false"' 2>/dev/null || echo "false")
-
-    if [[ "$_RT_HEALTHY" == "true" ]]; then
-        _RUNTIME_FIRST_STDOUT="$_RT_STDOUT"
-    else
-        # Invalid or error: do NOT fall back to shell role guidance.
-        # Emit a clear error in additionalContext so the agent can see what failed.
-        _ERR_VIOLATIONS=$(echo "$_RT_STDOUT" | jq -r '
-          if (.violations | length) > 0 then
-            "Violations: " + (.violations | join("; "))
-          else "" end
-        ' 2>/dev/null || echo "")
-        _ERR_BACKEND=$(echo "$_RT_STDERR" | jq -r '.message // empty' 2>/dev/null || echo "")
-        _ERR_PARTS=("Runtime prompt-pack compile failed for this SubagentStart.")
-        [[ -n "$_ERR_VIOLATIONS" ]] && _ERR_PARTS+=("$_ERR_VIOLATIONS")
-        [[ -n "$_ERR_BACKEND" ]] && _ERR_PARTS+=("Backend error: $_ERR_BACKEND")
-        _fail_attempt "prompt_pack_compile_failed" "${_CARRIER_ATTEMPT_ID:-}"
-        _ERR_CTX=$(printf '%s\n' "${_ERR_PARTS[@]}" | jq -Rs .)
-        cat <<EOF
+        V6_AGENT_REF=$(_tool_use_id_from_subagent_meta "$PARENT_TRANSCRIPT" "$PAYLOAD_AGENT_ID" || true)
+        V6_WF_ID=$(current_workflow_id "$PROJECT_ROOT" 2>/dev/null || echo "default")
+        V6_CTX=$(printf '%s' "${CHILD_PROMPT:-}" | _local_cc_policy stage start-context \
+            --subagent-type "$AGENT_TYPE" \
+            --workflow-id "$V6_WF_ID" \
+            --worktree-path "$PROJECT_ROOT" \
+            ${SESSION_ID:+--session-id "$SESSION_ID"} \
+            ${PAYLOAD_AGENT_ID:+--agent-id "$PAYLOAD_AGENT_ID"} \
+            ${V6_AGENT_REF:+--agent-ref "$V6_AGENT_REF"} \
+            ${V6_CLAIM_TOKEN:+--claim-token "$V6_CLAIM_TOKEN"} \
+            ${V6_TICKET_ID:+--ticket-id "$V6_TICKET_ID"} \
+            --stdin 2>/dev/null || true)
+        V6_FOUND=$(printf '%s' "${V6_CTX:-}" | jq -r '.found // false' 2>/dev/null || echo "false")
+        if [[ "$V6_FOUND" == "true" ]]; then
+            V6_STAGE=$(printf '%s' "$V6_CTX" | jq -r '.stage_run.stage_id // empty' 2>/dev/null || echo "")
+            V6_RUN_ID=$(printf '%s' "$V6_CTX" | jq -r '.stage_run.id // empty' 2>/dev/null || echo "")
+            V6_WORKFLOW_ID=$(printf '%s' "$V6_CTX" | jq -r '.stage_run.workflow_id // empty' 2>/dev/null || echo "")
+            _start_role_marker "$AGENT_TYPE" "$V6_WORKFLOW_ID"
+            if [[ "$V6_STAGE" == "guardian:land" && -n "$V6_RUN_ID" ]]; then
+                _local_cc_policy stage landing-ready "$V6_RUN_ID" >/dev/null 2>&1 || true
+                V6_CTX=$(printf '%s' "${CHILD_PROMPT:-}" | _local_cc_policy stage start-context \
+                    --subagent-type "$AGENT_TYPE" \
+                    --workflow-id "$V6_WF_ID" \
+                    --worktree-path "$PROJECT_ROOT" \
+                    ${SESSION_ID:+--session-id "$SESSION_ID"} \
+                    ${PAYLOAD_AGENT_ID:+--agent-id "$PAYLOAD_AGENT_ID"} \
+                    ${V6_AGENT_REF:+--agent-ref "$V6_AGENT_REF"} \
+                    ${V6_CLAIM_TOKEN:+--claim-token "$V6_CLAIM_TOKEN"} \
+                    ${V6_TICKET_ID:+--ticket-id "$V6_TICKET_ID"} \
+                    --stdin 2>/dev/null || true)
+            fi
+            V6_TEXT=$(printf '%s' "$V6_CTX" | jq -r '.context_text // empty' 2>/dev/null || echo "")
+            ESCAPED=$(printf '%s' "$V6_TEXT" | jq -Rs .)
+            cat <<EOF
 {
   "hookSpecificOutput": {
     "hookEventName": "SubagentStart",
-    "additionalContext": $_ERR_CTX
+    "additionalContext": $ESCAPED
   }
 }
 EOF
-        exit 0
-    fi
-fi
+            exit 0
+        fi
+        ;;
+esac
 
 # Track subagent spawn via lifecycle authority (DEC-LIFECYCLE-002).
+# Using PID as the agent_id gives a stable per-process key that the
+# check-*.sh SubagentStop hooks can match when deactivating the marker.
 # Calls dispatch agent-start (lifecycle.py) via local CLI resolution so
 # this reaches the in-worktree runtime in isolated worktrees before merge.
 # rt_marker_set direct call removed — lifecycle.py is the sole authority.
-#
-# @decision DEC-CLAUDEX-SA-IDENTITY-001
-# Title: Payload agent_id is sole authority for SubagentStart marker+lease seating
-# Status: accepted
-# Rationale: The harness delivers the subagent's canonical agent_id in the
-#   SubagentStart payload (HOOK_INPUT.agent_id). Shell PID (agent-$$) is
-#   per-process and unstable across SubagentStart/SubagentStop boundaries;
-#   it is unreachable from any downstream cc-policy context role resolver.
-#   Single source of truth: HOOK_INPUT.agent_id → agent_markers.agent_id →
-#   dispatch_leases.agent_id. Empty payload agent_id = fail-closed with
-#   no_payload_agent_id (seating skipped, lease claim skipped, exit 0 clean).
-#   Hard sweep of stale markers deferred to GS1-F-3 per planner risk #3
-#   (CLI surface marker deactivate-stale does not exist); this slice adds
-#   observatory-only diagnostic breadcrumbs in CONTEXT_PARTS when a stale
-#   active marker of a different role is detected before seating.
 #
 # W-CONV-2 (DEC-CONV-002): Only dispatch-significant roles write markers.
 # Explore, Bash, and general-purpose agents are lightweight coordinators
@@ -275,58 +194,18 @@ fi
 # prevents that by skipping agent-start entirely for non-dispatch roles.
 # The schemas.py cleanup migration handles markers that already accumulated.
 _IS_DISPATCH_ROLE=false
-case "${_MARKER_ROLE:-}" in
-    planner|implementer|guardian|guardian:provision|guardian:land|reviewer)
+case "${AGENT_TYPE:-}" in
+    planner|Plan|implementer|tester|guardian|critic|reviewer)
         _IS_DISPATCH_ROLE=true
         ;;
 esac
 
 if [[ "$_IS_DISPATCH_ROLE" == "true" ]]; then
-    # DEC-CLAUDEX-SA-IDENTITY-001: fail-closed when payload agent_id is absent.
-    # Without a payload agent_id, marker+lease seating cannot be correlated to
-    # the harness-delivered identity. Skip seating and append a diagnostic note
-    # to CONTEXT_PARTS so orchestrators can detect the gap. The hook continues
-    # to the runtime-first path so contract-present dispatches still receive
-    # their prompt-pack even if the harness doesn't deliver agent_id yet.
-    if [[ -z "$_PAYLOAD_AGENT_ID" ]]; then
-        CONTEXT_PARTS+=("SubagentStart seating skipped (no_payload_agent_id): HOOK_INPUT.agent_id was empty or absent. Marker and lease will not be claimed for role '${_MARKER_ROLE:-unknown}'. Ensure the harness is delivering agent_id in the SubagentStart payload.")
-    else
-        # Observatory-only stale-marker breadcrumb (DEC-CLAUDEX-SA-IDENTITY-001).
-        # If an active marker of a DIFFERENT role exists for this project_root,
-        # append a warning. Hard deactivation is deferred to GS1-F-3.
-        _STALE_MARKER_JSON=$(_local_cc_policy marker get-active \
-            --project-root "$PROJECT_ROOT" 2>/dev/null || echo "")
-        _STALE_FOUND=$(printf '%s' "${_STALE_MARKER_JSON:-}" | jq -r '.found // false' 2>/dev/null || echo "false")
-        if [[ "$_STALE_FOUND" == "true" ]]; then
-            _STALE_ROLE=$(printf '%s' "$_STALE_MARKER_JSON" | jq -r '.active_agent.role // empty' 2>/dev/null || true)
-            _STALE_AID=$(printf '%s' "$_STALE_MARKER_JSON" | jq -r '.active_agent.agent_id // empty' 2>/dev/null || true)
-            if [[ -n "$_STALE_ROLE" && "$_STALE_ROLE" != "${_MARKER_ROLE:-}" ]]; then
-                CONTEXT_PARTS+=("stale active marker: role=${_STALE_ROLE} agent_id=${_STALE_AID} will be superseded by role=${_MARKER_ROLE:-unknown} agent_id=${_PAYLOAD_AGENT_ID}")
-            fi
-        fi
-
-        # Pass project_root and workflow_id for per-project scoping (W-CONV-2).
-        # Contract-bearing dispatches already carry the workflow identity; use
-        # that authority before falling back to branch-derived legacy identity.
-        _WF_ID_FOR_MARKER=$(echo "$HOOK_INPUT" | jq -r '.workflow_id // empty' 2>/dev/null || echo "")
-        [[ -n "$_WF_ID_FOR_MARKER" ]] || _WF_ID_FOR_MARKER=$(current_workflow_id "$PROJECT_ROOT" 2>/dev/null || true)
-        # Capture stderr to detect CLI failures; on nonzero exit emit a single-line
-        # diagnostic breadcrumb into CONTEXT_PARTS (DEC-CLAUDEX-SA-MARKER-RELIABILITY-001).
-        # The hook always exits 0 — seating failure is observable but never blocking.
-        _MARKER_STDERR_FILE=$(mktemp)
-        _local_cc_policy dispatch agent-start \
-            "${_MARKER_ROLE:-unknown}" "$_PAYLOAD_AGENT_ID" \
-            --project-root "$PROJECT_ROOT" \
-            ${_WF_ID_FOR_MARKER:+--workflow-id "$_WF_ID_FOR_MARKER"} \
-            >/dev/null 2>"$_MARKER_STDERR_FILE" && _MARKER_RC=0 || _MARKER_RC=$?
-        if [[ "$_MARKER_RC" -ne 0 ]]; then
-            _MARKER_STDERR_FIRST=$(head -1 "$_MARKER_STDERR_FILE" 2>/dev/null || echo "")
-            _AGENT_ID_SHORT="${_PAYLOAD_AGENT_ID:0:12}"
-            CONTEXT_PARTS+=("marker seating failed (role=${_MARKER_ROLE:-unknown} agent_id=${_AGENT_ID_SHORT} exit=${_MARKER_RC}): ${_MARKER_STDERR_FIRST:-no stderr}")
-            log_json "marker_seating_failed" "role=${_MARKER_ROLE:-unknown} agent_id=${_PAYLOAD_AGENT_ID} exit=${_MARKER_RC} stderr=${_MARKER_STDERR_FIRST:-}" || true
-        fi
-        rm -f "$_MARKER_STDERR_FILE"
-    fi
+    # Pass project_root and workflow_id for per-project scoping (W-CONV-2).
+    # workflow_id is derived from the current branch via current_workflow_id()
+    # so the marker is queryable via get_active(project_root=X, workflow_id=W).
+    _WF_ID_FOR_MARKER=$(current_workflow_id "$PROJECT_ROOT" 2>/dev/null || true)
+    _start_role_marker "${AGENT_TYPE:-unknown}" "$_WF_ID_FOR_MARKER"
 fi
 
 # --- Lease claim: bind this agent to an active dispatch lease if one exists ---
@@ -335,68 +214,16 @@ fi
 # its role, allowed ops, and next step without re-inferring from environment.
 # If no lease exists, inject a warning — high-risk git ops will be denied by
 # guard.sh Check 3 (validate_op fallback path) when no lease is active.
-# DEC-CLAUDEX-SA-IDENTITY-001: use payload agent_id (not PID) for correlation.
-# When agent_id is absent (no_payload_agent_id guard fired), skip lease claim
-# so dispatch_leases.agent_id is never set to an empty or PID-shaped string.
-if [[ "$_IS_DISPATCH_ROLE" == "true" ]]; then
-    rt_lease_expire_stale
-    if [[ -n "$_PAYLOAD_AGENT_ID" ]]; then
-        _LEASE_WORKTREE_PATH="$PROJECT_ROOT"
-        _LEASE_WORKFLOW_ID=""
-        _LEASE_BRANCH="${GIT_BRANCH:-}"
-        if [[ "$_HAS_CONTRACT" == "yes" ]]; then
-            _LEASE_WORKFLOW_ID=$(echo "$HOOK_INPUT" | jq -r '.workflow_id // empty' 2>/dev/null || echo "")
-            if [[ -n "$_LEASE_WORKFLOW_ID" ]]; then
-                _WF_BINDING_JSON=$(_local_cc_policy workflow get "$_LEASE_WORKFLOW_ID" 2>/dev/null || echo "")
-                _WF_BINDING_FOUND=$(printf '%s' "${_WF_BINDING_JSON:-}" | jq -r '.found // false' 2>/dev/null || echo "false")
-                if [[ "$_WF_BINDING_FOUND" == "true" ]]; then
-                    _WF_BINDING_WORKTREE=$(printf '%s' "$_WF_BINDING_JSON" | jq -r '.worktree_path // empty' 2>/dev/null || echo "")
-                    _WF_BINDING_BRANCH=$(printf '%s' "$_WF_BINDING_JSON" | jq -r '.branch // empty' 2>/dev/null || echo "")
-                    [[ -n "$_WF_BINDING_WORKTREE" ]] && _LEASE_WORKTREE_PATH="$_WF_BINDING_WORKTREE"
-                    [[ -n "$_WF_BINDING_BRANCH" ]] && _LEASE_BRANCH="$_WF_BINDING_BRANCH"
-                fi
-            fi
-        fi
-
-        _CLAIM=$(rt_lease_claim "$_PAYLOAD_AGENT_ID" "$_LEASE_WORKTREE_PATH" "$_EFFECTIVE_LEASE_ROLE")
-    else
-        _CLAIM='{"found":false}'
-        _LEASE_WORKTREE_PATH="$PROJECT_ROOT"
-        _LEASE_WORKFLOW_ID=""
-    fi
-    _LEASE_ID=$(printf '%s' "${_CLAIM:-}" | jq -r '.lease.lease_id // .lease_id // empty' 2>/dev/null || true)
-    if [[ -n "$_LEASE_ID" ]]; then
-        _L_ROLE=$(printf '%s' "$_CLAIM" | jq -r '.lease.role // .role // empty' 2>/dev/null || true)
-        _L_OPS=$(printf '%s' "$_CLAIM" | jq -r '.lease.allowed_ops_json // .allowed_ops_json // empty' 2>/dev/null || true)
-        _L_NS=$(printf '%s' "$_CLAIM" | jq -r '.lease.next_step // .next_step // empty' 2>/dev/null || true)
-        CONTEXT_PARTS+=("Lease: id=$_LEASE_ID role=$_L_ROLE ops=$_L_OPS${_L_NS:+ next=$_L_NS}")
-    else
-        CONTEXT_PARTS+=("WARNING: No runtime-issued lease for worktree $PROJECT_ROOT. High-risk git ops will be denied.")
-    fi
+_CLAIM=$(rt_lease_claim "$(_marker_agent_id)" "$PROJECT_ROOT" "$AGENT_TYPE")
+_LEASE_ID=$(printf '%s' "${_CLAIM:-}" | jq -r '.lease.lease_id // .lease_id // empty' 2>/dev/null || true)
+if [[ -n "$_LEASE_ID" ]]; then
+    _L_ROLE=$(printf '%s' "$_CLAIM" | jq -r '.lease.role // .role // empty' 2>/dev/null || true)
+    _L_OPS=$(printf '%s' "$_CLAIM" | jq -r '.lease.allowed_ops_json // .allowed_ops_json // empty' 2>/dev/null || true)
+    _L_NS=$(printf '%s' "$_CLAIM" | jq -r '.lease.next_step // .next_step // empty' 2>/dev/null || true)
+    CONTEXT_PARTS+=("Lease: id=$_LEASE_ID role=$_L_ROLE ops=$_L_OPS${_L_NS:+ next=$_L_NS}")
 else
-    _CLAIM='{"found":false}'
-    _LEASE_ID=""
+    CONTEXT_PARTS+=("WARNING: No active lease for worktree $PROJECT_ROOT. High-risk git ops will be denied.")
 fi
-
-if [[ "$_HAS_CONTRACT" == "yes" ]]; then
-    if [[ -n "$_RUNTIME_FIRST_STDOUT" ]]; then
-        echo "$_RUNTIME_FIRST_STDOUT" | jq '.envelope'
-        exit 0
-    fi
-fi
-
-# ---------------------------------------------------------------------------
-# Lightweight non-canonical context path.
-#
-# Canonical dispatch seats never reach this path:
-#   - contract-bearing seats exit through the runtime prompt-pack path above
-#   - canonical seats without a carrier-backed contract are blocked before
-#     marker/lease seating
-#
-# This remaining path is deliberately sparse and non-authoritative. It exists
-# only for helper/non-canonical agents that do not participate in the governed
-# planner -> guardian -> implementer -> reviewer -> guardian chain.
-# ---------------------------------------------------------------------------
 
 CTX_LINE="Context:"
 [[ -n "$GIT_BRANCH" ]] && CTX_LINE="$CTX_LINE $GIT_BRANCH"
@@ -409,9 +236,96 @@ else
 fi
 CONTEXT_PARTS+=("$CTX_LINE")
 
+# --- Agent-type-specific context ---
 case "$AGENT_TYPE" in
-    ""|Bash|Explore|general-purpose|statusline-setup)
-        # Lightweight agents — Context line only.
+    planner|Plan)
+        CONTEXT_PARTS+=("Role: Planner — create MASTER_PLAN.md before any code. Include rationale, architecture, git issues, worktree strategy.")
+        get_research_status "$PROJECT_ROOT"
+        if [[ "$RESEARCH_EXISTS" == "true" ]]; then
+            CONTEXT_PARTS+=("Research: $RESEARCH_ENTRY_COUNT entries ($RESEARCH_RECENT_TOPICS). Read .claude/research-log.md before researching — avoid duplicates.")
+        else
+            CONTEXT_PARTS+=("No prior research. /deep-research for tech comparisons, /last30days for community sentiment.")
+        fi
+        ;;
+    implementer)
+        # Inject worktree path from lease context (DEC-GUARD-WT-003, W-GWT-3).
+        # Guardian provisions the worktree and issues an implementer lease that
+        # carries worktree_path. We surface it here so the agent knows its
+        # working directory without re-inferring from environment.
+        # If no lease was found (no worktree provisioned yet), warn — Guard.sh
+        # will deny high-risk git ops and the orchestrator should dispatch
+        # Guardian in provision mode before this implementer proceeds.
+        if [[ -n "$_LEASE_ID" ]]; then
+            _WT_PATH=$(printf '%s' "$_CLAIM" | jq -r '.lease.worktree_path // empty' 2>/dev/null || true)
+            if [[ -n "$_WT_PATH" ]]; then
+                CONTEXT_PARTS+=("Worktree: $_WT_PATH (provisioned by Guardian)")
+            else
+                CONTEXT_PARTS+=("WARNING: No worktree detected. Guardian should have provisioned one. Check dispatch context for worktree_path.")
+            fi
+        else
+            CONTEXT_PARTS+=("WARNING: No worktree detected. Guardian should have provisioned one. Check dispatch context for worktree_path.")
+        fi
+        CONTEXT_PARTS+=("Role: Implementer — test-first development in isolated worktrees. Add @decision annotations to 50+ line files. NEVER work on main. The branch-guard hook will DENY any source file writes on main.")
+
+        # Bind workflow to runtime so guard.sh Check 12 and later roles can
+        # discover the worktree path without inferring from CWD or git state.
+        # WS1: if a lease was claimed, use the lease's workflow_id for the binding
+        # so that subsequent reviewer/guardian policy checks
+        # see the same workflow_id. Branch-derived id is the fallback only when
+        # no lease was claimed.
+        _WF_ID=""
+        if [[ -n "$_LEASE_ID" ]]; then
+            _WF_ID=$(printf '%s' "$_CLAIM" | jq -r '.lease.workflow_id // .workflow_id // empty' 2>/dev/null || true)
+        fi
+        [[ -z "$_WF_ID" ]] && _WF_ID=$(current_workflow_id "$PROJECT_ROOT")
+        _WF_WORKTREE="$PROJECT_ROOT"
+        _WF_BRANCH="${GIT_BRANCH:-unknown}"
+        rt_workflow_bind "$_WF_ID" "$_WF_WORKTREE" "$_WF_BRANCH" || true
+        CONTEXT_PARTS+=("Workflow binding: id=$_WF_ID worktree=$_WF_WORKTREE branch=$_WF_BRANCH")
+
+        # Check for workflow_id mismatch: scope loaded for different workflow_id
+        _SCOPE_CHECK=$(cc_policy workflow scope-get "$_WF_ID" 2>/dev/null) || _SCOPE_CHECK=""
+        _SCOPE_FOUND=$(printf '%s' "${_SCOPE_CHECK:-}" | jq -r 'if .found then "yes" else "no" end' 2>/dev/null || echo "no")
+        if [[ "$_SCOPE_FOUND" != "yes" ]]; then
+            CONTEXT_PARTS+=("WARNING: No scope manifest found for workflow_id '$_WF_ID'. Planner should set scope via 'cc-policy workflow scope-set' before commit. Guard.sh will deny commit without scope.")
+        fi
+
+        # Inject test status (WS3: via rt_test_state_get from SQLite authority)
+        _TS_JSON=$(rt_test_state_get "$PROJECT_ROOT") || _TS_JSON=""
+        _TS_STATUS=$(printf '%s' "${_TS_JSON:-}" | jq -r '.status // "unknown"' 2>/dev/null || echo "unknown")
+        _TS_FAILS=$(printf '%s' "${_TS_JSON:-}" | jq -r '.fail_count // 0' 2>/dev/null || echo "0")
+        if [[ "$_TS_STATUS" == "fail" ]]; then
+            CONTEXT_PARTS+=("WARNING: Tests currently FAILING ($_TS_FAILS failures). Fix before proceeding.")
+        fi
+        get_research_status "$PROJECT_ROOT"
+        if [[ "$RESEARCH_EXISTS" == "true" ]]; then
+            CONTEXT_PARTS+=("Research log: $RESEARCH_ENTRY_COUNT entries. Check .claude/research-log.md before researching APIs or libraries.")
+        fi
+        CONTEXT_PARTS+=("HANDOFF: Implementers do not own proof-of-work anymore. Gather test output and emit the v6 result contract; runtime routes through critic and reviewer before Guardian landing.")
+        ;;
+    tester)
+        # Legacy tester context retained for historical/manual runs only. Active
+        # v6 readiness uses reviewer + claude_ctrl_result.
+        if ! is_claude_meta_repo "$PROJECT_ROOT"; then
+            _EVAL_WF=$(current_workflow_id "$PROJECT_ROOT")
+            _EVAL_STATUS=$(rt_eval_get "$_EVAL_WF" 2>/dev/null || echo "idle")
+            CONTEXT_PARTS+=("Evaluation state: workflow=$_EVAL_WF status=$_EVAL_STATUS")
+        fi
+        CONTEXT_PARTS+=("Role: Tester is legacy. Active v6 readiness uses reviewer with claude_ctrl_result; do not use tester for new readiness decisions.")
+        ;;
+    guardian)
+        CONTEXT_PARTS+=("Role: Guardian — Update MASTER_PLAN.md ONLY at phase boundaries: when a merge completes a phase, update status to completed, populate Decision Log, present diff to user. For non-phase-completing merges, do NOT update the plan — close the relevant GitHub issues instead. Always: verify @decision annotations, check for staged secrets, require explicit approval for high-risk operations.")
+        CONTEXT_PARTS+=("Authority: Only Guardian may run git commit, merge, or push. In canonical v6, landing is gated by v6_landing_readiness assembled from reviewer/test/scope/SHA/lease evidence; legacy evaluation_state is migration-only.")
+        # Inject test status (WS3: via rt_test_state_get from SQLite authority)
+        _TS_JSON=$(rt_test_state_get "$PROJECT_ROOT") || _TS_JSON=""
+        _TS_STATUS=$(printf '%s' "${_TS_JSON:-}" | jq -r '.status // "unknown"' 2>/dev/null || echo "unknown")
+        _TS_FAILS=$(printf '%s' "${_TS_JSON:-}" | jq -r '.fail_count // 0' 2>/dev/null || echo "0")
+        if [[ "$_TS_STATUS" == "fail" ]]; then
+            CONTEXT_PARTS+=("CRITICAL: Tests FAILING ($_TS_FAILS failures). Do NOT commit/merge until tests pass.")
+        fi
+        ;;
+    Bash|Explore)
+        # Lightweight agents — minimal context
         ;;
     *)
         CONTEXT_PARTS+=("Agent type: ${AGENT_TYPE:-unknown}")

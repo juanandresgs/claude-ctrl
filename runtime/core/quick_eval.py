@@ -1,12 +1,12 @@
 """Quick evaluation for Simple Task Fast Path changes.
 
 Validates that a working-tree diff is small enough and non-source-only
-to skip full reviewer evaluation. Writes evaluation_state=ready_for_guardian
+to skip full tester evaluation. Writes evaluation_state=ready_for_guardian
 when criteria are met.
 
 The STFP gate is entirely mechanical: no LLM judgment is involved. If the
 diff contains source code, too many files, or too many lines, it does not
-qualify for the fast path — the orchestrator must spawn a full reviewer.
+qualify for the fast path — the orchestrator must spawn a full tester.
 
 @decision DEC-QUICKEVAL-001
 Title: Quick eval is scope-gated, not LLM-gated
@@ -36,8 +36,9 @@ from runtime.core import evaluation, events
 # Constants
 # ---------------------------------------------------------------------------
 
-# Source file extensions that require full reviewer evaluation.
-# Data/config/document formats (.json, .yaml, .toml, .md, .svg) are excluded.
+# Source file extensions that require full tester evaluation.
+# .sh and config formats (.json, .yaml, .toml, .md) are excluded — they
+# are non-source for STFP purposes (docs, hooks, config).
 _SOURCE_EXTENSIONS: frozenset[str] = frozenset(
     {
         ".py",
@@ -45,19 +46,6 @@ _SOURCE_EXTENSIONS: frozenset[str] = frozenset(
         ".tsx",
         ".js",
         ".jsx",
-        ".mjs",
-        ".cjs",
-        ".mts",
-        ".cts",
-        ".astro",
-        ".vue",
-        ".svelte",
-        ".css",
-        ".scss",
-        ".sass",
-        ".less",
-        ".html",
-        ".htm",
         ".rs",
         ".go",
         ".java",
@@ -70,9 +58,6 @@ _SOURCE_EXTENSIONS: frozenset[str] = frozenset(
         ".cs",
         ".rb",
         ".php",
-        ".sh",
-        ".bash",
-        ".zsh",
     }
 )
 
@@ -168,7 +153,7 @@ def evaluate_quick(
         # Extract extension: if no dot, treat as no extension (empty string)
         ext = ("." + path.rsplit(".", 1)[-1]) if "." in path else ""
         if ext.lower() in _SOURCE_EXTENSIONS:
-            result["reason"] = f"Source file in diff: {path} — requires full reviewer"
+            result["reason"] = f"Source file in diff: {path} — requires full tester"
             return result
 
     # --- Step 4: Line count gate ---

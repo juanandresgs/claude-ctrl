@@ -7,7 +7,7 @@
 # binds the workflow and planner sets scope → commit allowed (at Check 12 level).
 #
 # Gates exercised:
-#   Check 3: WHO — guardian:land role (satisfied for both deny and allow paths)
+#   Check 3: WHO — guardian role (satisfied for both deny and allow paths)
 #   Check 9: test-status = pass (satisfied)
 #   Check 10: proof verified (satisfied via runtime SQLite)
 #   Check 12A: workflow binding must exist → deny (no binding), allow (after bind)
@@ -46,24 +46,23 @@ git -C "$TMP_DIR" checkout -b "$BRANCH" -q
 CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
 
 # Satisfy Check 3: guardian role
-CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian:land" --project-root "$TMP_DIR" >/dev/null 2>&1
+CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" --project-root "$TMP_DIR" >/dev/null 2>&1
 
-# Satisfy test gate: test-status = pass via runtime (policy engine reads SQLite)
-CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-    test-state set pass --project-root "$TMP_DIR" --passed 1 --total 1 >/dev/null 2>&1
-
-# Satisfy Check 10: evaluation_state = ready_for_guardian (TKT-024: replaces proof_state)
+# Satisfy test/reviewer evidence with matching HEAD. Do NOT bind/scope yet;
+# v6_landing_readiness should be blocked on workflow_binding/workflow_scope.
 HEAD_SHA=$(git -C "$TMP_DIR" rev-parse HEAD)
-CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" evaluation set "$WF_ID" "ready_for_guardian" --head-sha "$HEAD_SHA" >/dev/null 2>&1
-
-# Satisfy Check 3 (TKT-STAB-A3): lease required for all git ops; issue one so
-# the deny comes from Check 12A (no binding), not Check 3 (no lease).
 CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-    lease issue-for-dispatch "guardian" \
-    --workflow-id "$WF_ID" \
-    --worktree-path "$TMP_DIR" \
-    --branch "$BRANCH" \
-    --allowed-ops '["routine_local","high_risk"]' >/dev/null 2>&1
+    test-state set pass --project-root "$TMP_DIR" --head-sha "$HEAD_SHA" --passed 1 --total 1 >/dev/null 2>&1
+REVIEWER_JSON=$(CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" stage run-create --workflow-id "$WF_ID" --stage-id reviewer --worktree-path "$TMP_DIR")
+REVIEWER_RUN=$(printf '%s' "$REVIEWER_JSON" | jq -r '.stage_run.id')
+REVIEW_PAYLOAD=$(jq -nc --arg run "$REVIEWER_RUN" --arg sha "$HEAD_SHA" '{stage_run_id:$run,stage_id:"reviewer",verdict:"ready_for_guardian",summary:"reviewed",head_sha:$sha,findings:[]}')
+REVIEW_RESULT=$(CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" stage result-submit "$REVIEWER_RUN" --payload "$REVIEW_PAYLOAD")
+GUARDIAN_RUN=$(printf '%s' "$REVIEW_RESULT" | jq -r '.next_stage_run.id')
+LEASE_META=$(jq -nc --arg run "$GUARDIAN_RUN" '{stage_run_id:$run}')
+CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" lease issue-for-dispatch "guardian" \
+    --workflow-id "$WF_ID" --worktree-path "$TMP_DIR" --branch "$BRANCH" \
+    --allowed-ops '["routine_local","high_risk"]' --metadata "$LEASE_META" >/dev/null 2>&1
+CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" stage landing-ready "$GUARDIAN_RUN" >/dev/null 2>&1
 
 COMMIT_CMD="git -C \"$TMP_DIR\" commit --allow-empty -m 'test commit'"
 
@@ -88,7 +87,7 @@ if [[ "$decision_deny" != "deny" ]]; then
     echo "  output: $output_deny"
     exit 1
 fi
-if ! printf '%s' "$reason_deny" | grep -qi "workflow binding\|No workflow binding\|bind workflow"; then
+if ! printf '%s' "$reason_deny" | grep -qi "workflow binding\|workflow_binding\|No workflow binding\|bind workflow"; then
     echo "FAIL: $TEST_NAME — Phase 1: deny reason did not mention workflow binding"
     echo "  reason: $reason_deny"
     exit 1
@@ -102,6 +101,7 @@ CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
     workflow scope-set "$WF_ID" \
     --allowed '["runtime/*.py", "hooks/*.sh"]' \
     --forbidden '["settings.json"]' >/dev/null 2>&1
+CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" stage landing-ready "$GUARDIAN_RUN" >/dev/null 2>&1
 
 output_allow=$(printf '%s' "$PAYLOAD" \
     | CLAUDE_PROJECT_DIR="$TMP_DIR" CLAUDE_POLICY_DB="$TEST_DB" \

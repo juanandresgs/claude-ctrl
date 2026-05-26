@@ -27,22 +27,10 @@ These are the authoritative facts now:
   - Code anchor: `runtime/core/completions.py`
 - Test readiness: `test_state`
   - Code anchor: `runtime/core/test_state.py`
-- Session prompt counts and changed-file memory: `session_activity`, `session_file_changes`
-  - Code anchor: `runtime/core/session_activity.py`
-- Linter coverage gaps and linter hook memory: `enforcement_gaps`, `lint_profile_cache`, `lint_circuit_breakers`
-  - Code anchor: `runtime/core/enforcement_gaps.py`, `runtime/core/lint_state.py`
-- Escalating write-policy strike counters: `policy_strikes`
-  - Code anchor: `runtime/core/policy_strikes.py`
-- Compaction handoff context: `preserved_contexts`
-  - Code anchor: `runtime/core/preserved_context.py`
-- Bash source-mutation baselines: `bash_source_baselines`
-  - Code anchor: `runtime/core/bash_lifecycle.py`
 - Evaluator / landing readiness: `evaluation_state`
   - Code anchor: `runtime/core/evaluation.py`
 - Workflow binding and scope: runtime workflow tables
   - Code anchor: `runtime/core/workflows.py`
-- Work-item landing grant: `work_item_grants`
-  - Code anchor: `runtime/core/work_item_grants.py`
 - Findings and handoff breadcrumbs: runtime events
   - Code anchor: runtime event helpers used from hooks
 - Visible operational status: runtime-backed statusline snapshot
@@ -51,11 +39,6 @@ These are the authoritative facts now:
 These are no longer authoritative:
 
 - Branch-derived workflow identity in leased paths
-- `.session-changes-*`, `.prompt-count-*`, `.session-start-epoch`
-- `.enforcement-gaps`, `.lint-cache-*`, `.lint-breaker-*`
-- `.test-gate-strikes`, `.mock-gate-strikes`
-- `tmp/.bash-source-baseline-*`
-- `.preserved-context`
 - `.test-status`
 - `.agent-findings`
 - Pre-merge evaluator consumption
@@ -82,7 +65,7 @@ These are no longer authoritative:
          |                    |                |       decision_log, test_gate_pretool,
          |                    |                |       doc_gate, mock_gate, enforcement_gap
          |                    |                |
-         |                    |                +--> cc-policy evaluate (Bash/Agent policies)
+         |                    |                +--> cc-policy evaluate (12 bash-path policies)
          |                    |                       bash_tmp_safety, bash_worktree_cwd,
          |                    |                       bash_git_who, bash_main_sacred,
          |                    |                       bash_force_push, bash_destructive_git,
@@ -102,21 +85,18 @@ These are no longer authoritative:
          |                                      |           |
          |                                      |           |
          |                                      |           +--> writes runtime test_state
-         |                                      +--> projects test_state from successful Bash test commands
          |                                      |
-         |                                      +--> invalidates evaluation_state after source changes
+         |                                      +--> invalidates v6_landing_readiness after source changes
          |
          +---------------------------------------------------------------+
                                                                  |
-                                                      check-implementer.sh
-                                                      check-reviewer.sh
-                                                      check-guardian.sh
-                                                      post-task.sh
+                                                      v6-result-submit.sh
+                                                      subagent-start.sh
                                                                  |
-                                                                 +--> completion_records
-                                                                 +--> reviewer convergence -> evaluation_state
-                                                                 +--> determine_next_role()
-                                                                 +--> next-role suggestion
+                                                                 +--> stage_results
+                                                                 +--> v6_landing_readiness
+                                                                 +--> stage_machine transition
+                                                                 +--> V6_DISPATCH_READY
 
 All hook runtime access goes through:
 
@@ -146,8 +126,6 @@ Main runtime tables:
 - test_state
 - workflow_bindings
 - workflow_scope
-- work_items
-- work_item_grants
 - agent_markers
 - events
 - dispatch_cycles
@@ -166,65 +144,57 @@ Planner
     | governance / plan authority
     | can write planning/governance surfaces
     v
-post-task
+v6-result-submit.sh
     |
-    +--> next role: implementer
+    +--> next role: guardian:provision
 
 Implementer
     |
     | can write source
-    | can checkpoint commit on scoped branch when work-item grant allows it
-    | cannot merge, push, or touch main/master
+    | cannot land
     | source writes are tracked
     v
-post-task
+v6-result-submit.sh
     |
-    +--> evaluation_state = pending
-    +--> next role: reviewer
+    +--> next role: critic
 
+Critic
+    |
+    | cannot write source
+    | catches tactical defects before reviewer
+    v
 Reviewer
     |
     | cannot write source
     | runs tests + live verification
-    | must emit machine-parsed trailers:
-    |   REVIEW_VERDICT
-    |   REVIEW_HEAD_SHA
-    |   REVIEW_FINDINGS_JSON
+    | ends with claude_ctrl_result
     v
-check-reviewer.sh (SubagentStop reviewer adapter)
+v6-result-submit.sh
     |
-    +--> validates trailers fail-closed
-    +--> writes completion_record and reviewer findings
-    +--> dispatch_engine projects convergence into evaluation_state
-    v
-post-task
-    |
-    +--> determine_next_role(role, verdict)
+    +--> stage_machine transition
           |
           +--> needs_changes      -> implementer
           +--> blocked_by_plan    -> planner
-          +--> ready_for_guardian -> guardian
+          +--> ready_for_guardian -> guardian:land
 
 Guardian
     |
-    | owns final landing: main/master commit, merge, push
+    | only role allowed to commit / merge / push
     | pre-bash.sh -> cc-policy evaluate enforces:
     |   - valid active lease (bash_git_who)
     |   - passing test_state (bash_test_gate_commit, bash_test_gate_merge)
-    |   - evaluation_state == ready_for_guardian + SHA match (bash_eval_readiness)
+    |   - v6_landing_readiness ready + SHA match (bash_eval_readiness)
     |   - workflow binding and scope (bash_workflow_scope)
-    |   - work-item grant for routine no-ff autoland
     |   - approval token for high-risk ops (bash_approval_gate)
     |   - no force push without --force-with-lease (bash_force_push)
     v
 landing succeeds
     |
-    | guardian emits LANDING_RESULT / OPERATION_CLASS
+    | guardian emits claude_ctrl_result
     v
-check-guardian.sh
+v6-result-submit.sh
     |
-    +--> writes guardian completion record
-    +--> consumes evaluation_state only after confirmed landing
+    +--> records guardian stage result
     v
 cycle complete
 ```
@@ -237,15 +207,15 @@ If a leased path is in play, the workflow identity comes from the lease, not fro
 
 This matters because multi-worktree and detached-head flows no longer depend on name guessing.
 
-### 2. Reviewer output now materially governs landing
+### 2. Reviewer output governs source landing
 
-Reviewer output is not just advisory anymore. The SubagentStop reviewer adapter (`check-reviewer.sh` in the current live chain; Phase 8 Slice 10 retired the legacy tester evaluator adapter, and Slice 11 removed the `tester` role from the runtime entirely) parses structured trailers into completion records. `dispatch_engine.py` projects valid reviewer convergence into `evaluation_state`.
+Reviewer is the active v6 readiness authority. It ends with a `claude_ctrl_result`
+that feeds `v6_landing_readiness`.
 
 Guardian cannot land unless:
 
-- the work-item landing grant allows the requested landing operation
 - the test state is passing
-- the evaluator verdict is `ready_for_guardian`
+- the reviewer verdict is `ready_for_guardian`
 - the evaluated `head_sha` matches the current HEAD
 
 If any of that is missing or stale, landing is denied.
@@ -259,11 +229,9 @@ If any of that is missing or stale, landing is denied.
 The write and git hooks now enforce role boundaries at action time:
 
 - Planner: governance / planning surfaces
-- Implementer: source changes and scoped branch checkpoint commits only when
-  the work-item grant permits them
-- Reviewer: verification, no source authority
-- Guardian: integration mutations only - final commit, merge, push, and
-  worktree lifecycle
+- Implementer: source changes
+- Tester: verification, no source authority
+- Guardian: permanent repo mutations only
 
 ### 5. Visibility reads runtime truth
 
@@ -275,15 +243,12 @@ You should expect the following behavior:
 
 - Wrong-role writes are denied immediately.
 - Unleased git operations in enforced paths are denied immediately.
-- Implementer cannot checkpoint commit without the right lease, scoped branch,
-  and work-item grant.
-- Guardian cannot land, merge, or push without the right lease, scope, and
-  work-item grant.
+- Guardian cannot commit, merge, or push without the right lease and scope.
 - Guardian cannot land with failing or stale test state.
-- Guardian cannot land if the Reviewer cleared a different SHA than the one currently checked out.
-- If code changes after the Reviewer clears it, readiness goes back to pending.
-- Reviewer verdicts route work back to Implementer, Planner, or forward to Guardian in a deterministic way.
-- Missing or malformed reviewer trailers fail closed.
+- Guardian cannot land if Tester cleared a different SHA than the one currently checked out.
+- If code changes after Tester clears it, readiness goes back to pending.
+- Tester verdicts route work back to Implementer, Planner, or forward to Guardian in a deterministic way.
+- Missing or malformed tester trailers fail closed.
 - The system should produce fewer confusing "it fell back to something else" cases.
 
 ## Operator Cheat Sheet
@@ -297,28 +262,25 @@ You should expect the following behavior:
 ### Implementer
 
 - Owns source changes
-- May create scoped branch checkpoint commits when the work-item grant allows it
-- Does not own merge, push, main/master commits, or landing readiness
-- Completion reopens evaluation and hands off to Reviewer
+- Does not own landing
+- Completion reopens evaluation and hands off to Tester
 
-### Reviewer
+### Tester
 
 - Owns the verification verdict
-- Must emit valid `REVIEW_*` trailers
+- Must emit valid `EVAL_*` trailers
 - Can send the workflow back to Implementer, back to Planner, or forward to Guardian
 
 ### Guardian
 
-- Owns final landing commit / merge / push
-- Must satisfy lease, scope, tests, evaluator readiness, work-item grant, and
-  approval policy
+- Owns commit / merge / push
+- Must satisfy lease, scope, tests, evaluator readiness, and approval policy
 
 ## Practical Truths
 
 If you want to know what the system believes, trust the runtime-backed surfaces:
 
 - lease / workflow identity -> lease context
-- routine branch/landing permission -> work-item landing grant
 - next role -> completion routing
 - landing readiness -> evaluation state
 - test readiness -> test state

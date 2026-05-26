@@ -40,23 +40,20 @@ ORIGINAL_HEAD=$(git -C "$TMP_DIR" rev-parse HEAD)
 
 # Set evaluation_state ready_for_guardian with ORIGINAL sha
 CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" schema ensure >/dev/null 2>&1
-CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian:land" --project-root "$TMP_DIR" >/dev/null 2>&1
-CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-    test-state set pass --project-root "$TMP_DIR" --passed 1 --total 1 >/dev/null 2>&1
-CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-    evaluation set "$WF_ID" "ready_for_guardian" --head-sha "$ORIGINAL_HEAD" >/dev/null 2>&1
-CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-    workflow bind "$WF_ID" "$TMP_DIR" "$BRANCH" >/dev/null 2>&1
-CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-    workflow scope-set "$WF_ID" --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1
-# Lease (TKT-STAB-A3): Check 3 requires an active lease; issue one so the
-# deny comes from Check 10 (SHA mismatch), not Check 3 (no lease).
-CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" \
-    lease issue-for-dispatch "guardian" \
-    --workflow-id "$WF_ID" \
-    --worktree-path "$TMP_DIR" \
-    --branch "$BRANCH" \
-    --allowed-ops '["routine_local","high_risk"]' >/dev/null 2>&1
+CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" marker set "agent-test" "guardian" --project-root "$TMP_DIR" >/dev/null 2>&1
+CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" workflow bind "$WF_ID" "$TMP_DIR" "$BRANCH" >/dev/null 2>&1
+CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" workflow scope-set "$WF_ID" --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1
+CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" test-state set pass --project-root "$TMP_DIR" --head-sha "$ORIGINAL_HEAD" --passed 1 --total 1 >/dev/null 2>&1
+REVIEWER_JSON=$(CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" stage run-create --workflow-id "$WF_ID" --stage-id reviewer --worktree-path "$TMP_DIR")
+REVIEWER_RUN=$(printf '%s' "$REVIEWER_JSON" | jq -r '.stage_run.id')
+REVIEW_PAYLOAD=$(jq -nc --arg run "$REVIEWER_RUN" --arg sha "$ORIGINAL_HEAD" '{stage_run_id:$run,stage_id:"reviewer",verdict:"ready_for_guardian",summary:"reviewed",head_sha:$sha,findings:[]}')
+REVIEW_RESULT=$(CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" stage result-submit "$REVIEWER_RUN" --payload "$REVIEW_PAYLOAD")
+GUARDIAN_RUN=$(printf '%s' "$REVIEW_RESULT" | jq -r '.next_stage_run.id')
+LEASE_META=$(jq -nc --arg run "$GUARDIAN_RUN" '{stage_run_id:$run}')
+CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" lease issue-for-dispatch "guardian" \
+    --workflow-id "$WF_ID" --worktree-path "$TMP_DIR" --branch "$BRANCH" \
+    --allowed-ops '["routine_local","high_risk"]' --metadata "$LEASE_META" >/dev/null 2>&1
+CLAUDE_POLICY_DB="$TEST_DB" python3 "$RUNTIME_ROOT/cli.py" stage landing-ready "$GUARDIAN_RUN" >/dev/null 2>&1
 
 # Now make a new commit — HEAD advances, sha no longer matches stored sha
 git -C "$TMP_DIR" commit --allow-empty -m "source change after evaluation" -q

@@ -6,9 +6,8 @@ scripts/statusline.sh without that script needing to call multiple subcommands.
 
 TKT-011 promotes this from a stub to the canonical implementation.
 TKT-024 establishes evaluation_state as the sole readiness display.
-W-CONV-4 removed proof_state from the snapshot dict entirely; the proof_state
-table itself was retired post-Phase-8 under Category C bundle 1
-(DEC-CATEGORY-C-PROOF-RETIRE-001).
+W-CONV-4 removes proof_state from the snapshot dict entirely — the proof_state
+table is retained for storage, but operators must see only one readiness signal.
 W-SL-160 introduces per-section partial failure reporting and a last_review
 section that shows whether the latest output was reviewed by Codex/Gemini.
 
@@ -17,10 +16,8 @@ Title: Statusline snapshot is a read-only projection across all runtime tables
 Status: accepted
 Rationale: snapshot() is the single read surface for the statusline HUD. It
   reads evaluation_state (TKT-024 sole readiness authority), agent_markers,
-  worktrees, completion_records, and events in one pass and returns a
-  canonical dict. No writes happen here. (The dispatch_cycles read was
-  retired under DEC-CATEGORY-C-DISPATCH-RETIRE-001; the dispatch_cycle_id /
-  dispatch_initiative snapshot keys persist with None defaults.)
+  worktrees, dispatch_cycles, completion_records, and events in one pass and
+  returns a canonical dict. No writes happen here.
   All fields default to None/0/[] so the statusline never crashes on an empty
   or partially-populated DB. Per-section try/except (W-SL-160) reports partial
   failures without suppressing successfully-loaded sections: if any section
@@ -33,10 +30,9 @@ Status: accepted
 Rationale: After TKT-024 cutover, evaluation_state is the sole readiness
   authority. W-CONV-4 completes the cleanup: proof_status and proof_workflow
   are removed from the snapshot dict entirely. Operators were seeing both
-  signals which could contradict each other. The proof_state table and
-  proof.py module were subsequently retired post-Phase-8 under Category C
-  bundle 1 (DEC-CATEGORY-C-PROOF-RETIRE-001); the display surface exposes
-  only eval_status, eval_workflow, and eval_head_sha for readiness.
+  signals which could contradict each other. proof_state table and proof.py
+  module are retained (storage is not removed), but the display surface now
+  exposes only eval_status, eval_workflow, and eval_head_sha for readiness.
 
 @decision DEC-WS6-001
 Title: dispatch_status derived from completion records, not dispatch_queue
@@ -48,9 +44,8 @@ Rationale: WS6 removes dispatch_queue from the routing hot-path. post-task.sh
   single authoritative routing table in completions.py. dispatch_workflow,
   dispatch_from_role, and dispatch_from_verdict are new fields that let the HUD
   surface where the routing decision came from. dispatch_initiative and
-  dispatch_cycle_id keys remain in the snapshot dict with None defaults for
-  schema-stability, but the dispatch_cycles-backed population path was
-  retired under DEC-CATEGORY-C-DISPATCH-RETIRE-001.
+  dispatch_cycle_id remain (read from dispatch_cycles) for initiative-level
+  tracking, which is not routing state.
 
 @decision DEC-SL-160
 Title: Per-section partial failure reporting and review status indicator
@@ -75,10 +70,6 @@ import time
 from runtime.core.completions import determine_next_role
 from runtime.core.completions import latest as comp_latest
 from runtime.core.markers import get_active_with_age
-
-
-CRITIC_ACTIVE_MAX_AGE_SECONDS = 20 * 60
-CRITIC_ACTIVE_STATUSES = {"started", "provider_ready", "reviewing"}
 
 
 def snapshot(conn: sqlite3.Connection) -> dict:
@@ -116,9 +107,6 @@ def snapshot(conn: sqlite3.Connection) -> dict:
                              verdict: str|None, reviewed_at: int|None}.
                             reviewed=False when no codex_stop_review event
                             postdates the most recent evaluation_state update.
-      critic_run          — latest Codex critic run telemetry:
-                            {active, status, verdict, provider, workflow_id,
-                             run_id, elapsed_seconds, fallback, progress_preview}
       snapshot_at         — Unix epoch when this snapshot was taken
       status              — 'ok' when all sections succeeded, 'partial_failure'
                             when one or more sections raised an exception
@@ -133,10 +121,10 @@ def snapshot(conn: sqlite3.Connection) -> dict:
         "eval_status": "idle",
         "eval_workflow": None,
         "eval_head_sha": None,
-        # proof_status / proof_workflow were removed (W-CONV-4 / DEC-EVAL-006)
-        # and the proof_state table itself was retired post-Phase-8 under
-        # Category C bundle 1 (DEC-CATEGORY-C-PROOF-RETIRE-001).
-        # evaluation_state is the sole readiness surface.
+        # proof_status / proof_workflow removed (W-CONV-4 / DEC-EVAL-006):
+        # operators were seeing two contradictory readiness signals. The
+        # proof_state table is retained for storage; only the display is
+        # removed. evaluation_state is the sole readiness surface.
         "active_agent": None,
         "active_agent_id": None,
         "marker_age_seconds": None,
@@ -156,25 +144,6 @@ def snapshot(conn: sqlite3.Connection) -> dict:
             "verdict": None,
             "reviewed_at": None,
         },
-        "critic_run": {
-            "found": False,
-            "active": False,
-            "run_id": None,
-            "workflow_id": None,
-            "status": None,
-            "verdict": None,
-            "provider": None,
-            "elapsed_seconds": None,
-            "fallback": None,
-            "summary": None,
-            "error": None,
-            "artifact_path": None,
-            "progress_preview": [],
-            "try_again_streak": 0,
-            "retry_limit": 0,
-            "escalated": False,
-            "escalation_reason": None,
-        },
         "snapshot_at": now,
         "status": "ok",
         "errors": [],
@@ -184,11 +153,10 @@ def snapshot(conn: sqlite3.Connection) -> dict:
     # Used by the last_review section to scope review events to the current
     # eval cycle — a review event before the last eval reset does not count.
     _eval_updated_at: int | None = None
-    _latest_valid_completion: dict | None = None
 
     # ------------------------------------------------------------------
     # Section: Evaluation state (TKT-024 / W-CONV-4) — sole readiness
-    # authority. proof_state was retired under DEC-CATEGORY-C-PROOF-RETIRE-001.
+    # authority. proof_state is no longer queried here (DEC-EVAL-006).
     # Prefer any non-idle row; most recently updated wins.
     # We also read updated_at here to scope last_review correctly.
     # ------------------------------------------------------------------
@@ -256,25 +224,31 @@ def snapshot(conn: sqlite3.Connection) -> dict:
     # the queue was a write-only sink with no live readers in the
     # enforcement path. Routing is now determined by
     # determine_next_role(role, verdict) applied to the most recent
-    # completion record. dispatch_initiative and dispatch_cycle_id were
-    # previously read from the dispatch_cycles table; that read was retired
-    # under DEC-CATEGORY-C-DISPATCH-RETIRE-001. The snapshot keys persist
-    # with their None defaults for schema stability.
+    # completion record. dispatch_initiative and dispatch_cycle_id are
+    # retained from dispatch_cycles — that is initiative-level tracking,
+    # not routing state.
     # ------------------------------------------------------------------
     try:
         comp = comp_latest(conn)
         if comp and comp.get("valid"):
-            _latest_valid_completion = comp
             _next = determine_next_role(comp["role"], comp.get("verdict", ""))
             result["dispatch_status"] = _next  # None means cycle complete
             result["dispatch_workflow"] = comp.get("workflow_id")
             result["dispatch_from_role"] = comp["role"]
             result["dispatch_from_verdict"] = comp.get("verdict", "")
 
-        # dispatch_cycles was retired under DEC-CATEGORY-C-DISPATCH-RETIRE-001.
-        # dispatch_cycle_id and dispatch_initiative remain in the snapshot
-        # dict with their None defaults so schema-checking consumers do not
-        # break, but the legacy table-backed population path is gone.
+        row = conn.execute(
+            """
+            SELECT id, initiative
+            FROM   dispatch_cycles
+            WHERE  status = 'active'
+            ORDER  BY created_at DESC
+            LIMIT  1
+            """
+        ).fetchone()
+        if row:
+            result["dispatch_initiative"] = row["initiative"]
+            result["dispatch_cycle_id"] = row["id"]
     except Exception as exc:
         result["status"] = "partial_failure"
         result["errors"].append({"section": "dispatch", "error": str(exc)})
@@ -351,11 +325,6 @@ def snapshot(conn: sqlite3.Connection) -> dict:
             detail = row["detail"] or ""
             source = row["source"] or ""
             reviewer: str = "codex" if not source or source.startswith("workflow:") else source
-            if "provider=" in detail:
-                provider_part = detail.split("provider=", 1)[1].split("|", 1)[0].strip()
-                provider = provider_part.split()[0] if provider_part else ""
-                if provider:
-                    reviewer = provider
 
             # Parse verdict from detail string.
             verdict: str | None = None
@@ -377,95 +346,5 @@ def snapshot(conn: sqlite3.Connection) -> dict:
     except Exception as exc:
         result["status"] = "partial_failure"
         result["errors"].append({"section": "last_review", "error": str(exc)})
-
-    # ------------------------------------------------------------------
-    # Section: Current critic run — statusline heartbeat for Codex tactical
-    # critic visibility (DEC-CRITIC-RUNS-001 / DEC-CRITIC-VISIBILITY-002).
-    #
-    # Do not show the latest critic row globally. That made stale terminal rows
-    # look current. Active non-stale runs are visible directly; terminal runs are
-    # visible only when the latest valid completion is an implementer completion
-    # for the same workflow and the critic run postdates that completion.
-    # ------------------------------------------------------------------
-    try:
-        row = conn.execute(
-            """
-            SELECT run_id, workflow_id, status, verdict, provider, fallback,
-                   summary, error, artifact_path, progress_json, metrics_json,
-                   started_at, updated_at, completed_at
-            FROM   critic_runs
-            WHERE  status IN ('started', 'provider_ready', 'reviewing')
-              AND  updated_at >= ?
-            ORDER  BY updated_at DESC, started_at DESC, run_id DESC
-            LIMIT  1
-            """,
-            (now - CRITIC_ACTIVE_MAX_AGE_SECONDS,),
-        ).fetchone()
-        if row is None and _latest_valid_completion:
-            latest_role = str(_latest_valid_completion.get("role") or "")
-            latest_workflow = str(_latest_valid_completion.get("workflow_id") or "")
-            latest_created_at = int(_latest_valid_completion.get("created_at") or 0)
-            if latest_role == "implementer" and latest_workflow:
-                row = conn.execute(
-                    """
-                    SELECT run_id, workflow_id, status, verdict, provider, fallback,
-                           summary, error, artifact_path, progress_json, metrics_json,
-                           started_at, updated_at, completed_at
-                    FROM   critic_runs
-                    WHERE  workflow_id = ?
-                      AND  role = 'implementer'
-                      AND  status != 'fallback_completed'
-                      AND  updated_at >= ?
-                    ORDER  BY updated_at DESC, started_at DESC, run_id DESC
-                    LIMIT  1
-                    """,
-                    (latest_workflow, latest_created_at),
-                ).fetchone()
-        if row:
-            import json as _json
-
-            try:
-                progress = _json.loads(row["progress_json"] or "[]")
-            except (TypeError, ValueError):
-                progress = []
-            if not isinstance(progress, list):
-                progress = []
-            try:
-                metrics = _json.loads(row["metrics_json"] or "{}")
-            except (TypeError, ValueError):
-                metrics = {}
-            if not isinstance(metrics, dict):
-                metrics = {}
-            started_at = int(row["started_at"] or 0)
-            completed_at = int(row["completed_at"] or 0)
-            updated_at = int(row["updated_at"] or 0)
-            elapsed = max(0, (completed_at or updated_at or now) - started_at) if started_at else 0
-            active = str(row["status"] or "") in CRITIC_ACTIVE_STATUSES
-            result["critic_run"] = {
-                "found": True,
-                "active": active,
-                "run_id": row["run_id"],
-                "workflow_id": row["workflow_id"],
-                "status": row["status"],
-                "verdict": row["verdict"],
-                "provider": row["provider"],
-                "elapsed_seconds": elapsed,
-                "fallback": row["fallback"],
-                "summary": row["summary"],
-                "error": row["error"],
-                "artifact_path": row["artifact_path"],
-                "progress_preview": [
-                    str(item.get("message") or "")
-                    for item in progress[-3:]
-                    if isinstance(item, dict) and str(item.get("message") or "").strip()
-                ],
-                "try_again_streak": int(metrics.get("try_again_streak") or 0),
-                "retry_limit": int(metrics.get("retry_limit") or 0),
-                "escalated": bool(metrics.get("escalated") or False),
-                "escalation_reason": str(metrics.get("escalation_reason") or "") or None,
-            }
-    except Exception as exc:
-        result["status"] = "partial_failure"
-        result["errors"].append({"section": "critic_run", "error": str(exc)})
 
     return result

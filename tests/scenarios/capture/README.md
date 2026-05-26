@@ -89,9 +89,8 @@ When reviewing captured payloads, check these fields against what the hooks
 parse:
 
 **SubagentStart** — hooks/subagent-start.sh reads:
-- `.agent_type` — string: `planner`, `Plan`, `implementer`, `reviewer`,
-  `guardian`, `Bash`, `Explore`, or other. Phase 8 Slice 11 retired the legacy
-  `tester` value; it must not appear in new captures (DEC-PHASE8-SLICE11-001).
+- `.agent_type` — string: `planner`, `Plan`, `implementer`, `tester`,
+  `guardian`, `Bash`, `Explore`, or other
 
 **SubagentStop** — hooks/check-*.sh reads:
 - `.agent_type` — same values as SubagentStart
@@ -119,8 +118,8 @@ parse:
 **UserPromptSubmit** — hooks/prompt-submit.sh reads:
 - `.prompt` — the user's prompt text string
 
-**Stop** — hooks/surface.sh, session-summary.sh, stop-advisor.sh read:
-- `.last_assistant_message` when present; otherwise no specific field is required
+**Stop** — hooks/surface.sh, session-summary.sh, forward-motion.sh read:
+- No specific fields required from the payload
 
 ## Captured Payload Storage
 

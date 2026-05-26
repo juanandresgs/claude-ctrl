@@ -120,7 +120,7 @@ def test_eligible_single_json_file(conn, monkeypatch):
 
 
 def test_eligible_shell_hook_change(conn, monkeypatch):
-    """Change to a .sh hook file → not eligible; shell hooks are executable source."""
+    """Change to a .sh hook file → eligible (hooks/* are non-source)."""
     _make_run(
         monkeypatch,
         names_output="hooks/pre-bash.sh\n",
@@ -129,9 +129,8 @@ def test_eligible_shell_hook_change(conn, monkeypatch):
 
     result = quick_eval.evaluate_quick(conn, "/fake/project", workflow_id="wf-hook")
 
-    assert result["eligible"] is False
-    assert "hooks/pre-bash.sh" in result["reason"]
-    assert result["eval_written"] is False
+    assert result["eligible"] is True
+    assert result["eval_written"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +162,7 @@ def test_exactly_max_files_allowed(conn, monkeypatch):
     """Exactly MAX_FILES=3 changed non-source files → eligible."""
     _make_run(
         monkeypatch,
-        names_output="a.md\nb.json\nc.toml\n",
+        names_output="a.md\nb.json\nc.sh\n",
         stat_output=" 3 files changed, 10 insertions(+), 0 deletions(-)",
     )
 
@@ -189,7 +188,7 @@ def test_python_source_file_rejected(conn, monkeypatch):
 
     assert result["eligible"] is False
     assert "runtime/core/quick_eval.py" in result["reason"]
-    assert "requires full reviewer" in result["reason"]
+    assert "requires full tester" in result["reason"]
     assert result["eval_written"] is False
 
 

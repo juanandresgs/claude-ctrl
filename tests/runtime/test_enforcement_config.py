@@ -9,17 +9,15 @@ Title: Policy engine is the canonical authority for enforcement toggles
 Status: accepted
 Rationale: enforcement_config replaces the scattered toggle authorities
   (settings.json, codex state.json). These tests confirm the single-authority
-  invariant: only actors with CAN_SET_CONTROL_CONFIG (currently planner) may
-  write, all readers go through the same get() with scope precedence
-  (workflow > project > global > None).
+  invariant: only guardian may write, all readers go through the same get()
+  with scope precedence (workflow > project > global > None).
 
-@decision DEC-REGULAR-STOP-REVIEW-001
-Title: Legacy regular Stop model review gate toggled via enforcement_config, not state.json
+@decision DEC-V6-NO-HIDDEN-STOP-001
+Title: Hidden regular Stop review gate disabled by default
 Status: accepted
-Rationale: Tests confirm review_gate_regular_stop is seeded false globally
-  after deterministic stop-advisor.sh replaced the default model Stop review,
-  remains overridable per-project and per-workflow, and keeps the narrow
-  orchestrator/user exception for the legacy explicit Stop review toggle.
+Rationale: Tests confirm review_gate_regular_stop is seeded false globally,
+  while dispatch/subagent review remains enabled. Regular Stop review can be
+  toggled explicitly without becoming a hidden default gate.
 """
 
 from __future__ import annotations
@@ -55,22 +53,9 @@ def conn():
 
 
 def test_get_global_default_returns_seeded_value(conn):
-    """ensure_schema() seeds review_gate_regular_stop=false in the global scope."""
-    value = ec.get(conn, "review_gate_regular_stop")
-    assert value == "false", (
-        f"Expected seeded default 'false', got {value!r}. "
-        "Check ensure_schema() _defaults list in runtime/schemas.py."
-    )
-
-
-def test_get_global_default_critic_retry_limit(conn):
-    """ensure_schema() seeds critic_retry_limit=2 in the global scope."""
-    assert ec.get(conn, "critic_retry_limit") == "2"
-
-
-def test_get_global_default_critic_enabled_implementer_stop(conn):
-    """ensure_schema() seeds critic_enabled_implementer_stop=true in the global scope."""
-    assert ec.get(conn, "critic_enabled_implementer_stop") == "true"
+    """ensure_schema() seeds hidden regular Stop review disabled by default."""
+    assert ec.get(conn, "review_gate_regular_stop") == "false"
+    assert ec.get(conn, "review_gate_subagent_stop") == "true"
 
 
 def test_get_unknown_key_returns_none(conn):
@@ -84,23 +69,11 @@ def test_get_unknown_key_returns_none(conn):
 # ---------------------------------------------------------------------------
 
 
-def test_set_as_planner_writes_value(conn):
-    """Planner role (CAN_SET_CONTROL_CONFIG) may write enforcement_config; value is readable back."""
-    ec.set_(conn, "review_gate_regular_stop", "true", actor_role="planner")
+def test_set_as_guardian_writes_value(conn):
+    """Guardian role may write enforcement_config; value is readable back."""
+    ec.set_(conn, "review_gate_regular_stop", "false", actor_role="guardian")
     value = ec.get(conn, "review_gate_regular_stop")
-    assert value == "true"
-
-
-def test_set_as_guardian_raises_permission_error(conn):
-    """Guardian role no longer has CAN_SET_CONTROL_CONFIG — must be denied."""
-    with pytest.raises(ECPermissionError):
-        ec.set_(conn, "review_gate_regular_stop", "false", actor_role="guardian")
-
-
-def test_set_as_planner_alias_writes_value(conn):
-    """The live harness alias 'Plan' must resolve to planner and be allowed."""
-    ec.set_(conn, "review_gate_regular_stop", "true", actor_role="Plan")
-    assert ec.get(conn, "review_gate_regular_stop") == "true"
+    assert value == "false"
 
 
 def test_set_as_implementer_raises_permission_error(conn):
@@ -111,14 +84,14 @@ def test_set_as_implementer_raises_permission_error(conn):
 
 def test_set_regular_stop_as_orchestrator_is_allowed(conn):
     """The user-facing regular Stop toggle may be written by the orchestrator path."""
-    ec.set_(conn, "review_gate_regular_stop", "true", actor_role="")
-    assert ec.get(conn, "review_gate_regular_stop") == "true"
+    ec.set_(conn, "review_gate_regular_stop", "false", actor_role="")
+    assert ec.get(conn, "review_gate_regular_stop") == "false"
 
 
-def test_set_non_user_facing_key_as_orchestrator_raises_permission_error(conn):
-    """The orchestrator/user path must not mutate control-plane toggles."""
+def test_set_subagent_stop_as_orchestrator_raises_permission_error(conn):
+    """The orchestrator/user path must not mutate dispatch-safety toggles."""
     with pytest.raises(ECPermissionError):
-        ec.set_(conn, "critic_enabled_implementer_stop", "false", actor_role="")
+        ec.set_(conn, "review_gate_subagent_stop", "false", actor_role="")
 
 
 # ---------------------------------------------------------------------------
@@ -129,11 +102,11 @@ def test_set_non_user_facing_key_as_orchestrator_raises_permission_error(conn):
 def test_workflow_scope_overrides_project_overrides_global(conn):
     """Scope precedence: workflow= beats project= beats global."""
     # Write at all three scopes with distinct values.
-    ec.set_(conn, "review_gate_provider", "codex", scope="global", actor_role="planner")
+    ec.set_(conn, "review_gate_provider", "codex", scope="global", actor_role="guardian")
     ec.set_(
-        conn, "review_gate_provider", "gemini", scope="project=/my/project", actor_role="planner"
+        conn, "review_gate_provider", "gemini", scope="project=/my/project", actor_role="guardian"
     )
-    ec.set_(conn, "review_gate_provider", "openai", scope="workflow=wf-123", actor_role="planner")
+    ec.set_(conn, "review_gate_provider", "openai", scope="workflow=wf-123", actor_role="guardian")
 
     # No scope qualifiers → global
     assert ec.get(conn, "review_gate_provider") == "codex"
@@ -160,42 +133,16 @@ def test_workflow_scope_overrides_project_overrides_global(conn):
 
 
 def test_list_all_returns_seeded_rows(conn):
-    """list_all() returns the seeded defaults from ensure_schema()."""
+    """list_all() returns at least the two seeded defaults from ensure_schema()."""
     rows = ec.list_all(conn)
     keys = {r["key"] for r in rows}
-    assert "critic_enabled_implementer_stop" in keys
-    assert "critic_retry_limit" in keys
     assert "review_gate_regular_stop" in keys
     assert "review_gate_provider" in keys
 
 
 def test_list_all_scope_filter(conn):
     """list_all(scope='global') returns only global-scoped rows."""
-    ec.set_(conn, "my_key", "val", scope="project=/foo", actor_role="planner")
+    ec.set_(conn, "my_key", "val", scope="project=/foo", actor_role="guardian")
     global_rows = ec.list_all(conn, scope="global")
     for row in global_rows:
         assert row["scope"] == "global", f"Expected scope=global, got {row['scope']!r}"
-
-
-# ---------------------------------------------------------------------------
-# 5. Invariant: WHO gate derives from authority_registry, not a hard-coded role
-# ---------------------------------------------------------------------------
-
-
-def test_who_gate_derives_from_authority_registry(conn):
-    """The WHO gate is mechanically tied to authority_registry — not a hard-coded role."""
-    from runtime.core import authority_registry as ar
-
-    # Only stages with CAN_SET_CONTROL_CONFIG can write
-    allowed_stages = ar.stages_with_capability(ar.CAN_SET_CONTROL_CONFIG)
-    assert len(allowed_stages) == 1, f"Expected exactly one stage, got {allowed_stages}"
-    assert allowed_stages[0] == "planner"
-
-    # Planner can write
-    ec.set_(conn, "test_key", "val", actor_role="planner")
-    assert ec.get(conn, "test_key") == "val"
-
-    # No other active stage can write
-    for stage in ("guardian:provision", "guardian:land", "implementer", "reviewer"):
-        with pytest.raises(ECPermissionError):
-            ec.set_(conn, "test_key_2", "val", actor_role=stage)

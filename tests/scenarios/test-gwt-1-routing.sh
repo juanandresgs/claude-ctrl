@@ -7,8 +7,8 @@
 #   planner stop  → next_role=guardian, guardian_mode=provision, AUTO_DISPATCH: guardian
 #   guardian stop (provisioned, WORKTREE_PATH) → next_role=implementer, AUTO_DISPATCH: implementer
 #                                                 worktree_path encoded in suggestion
-#   reviewer stop (needs_changes) with workflow binding → worktree_path in suggestion
-#   reviewer stop (needs_changes) without binding → routes correctly, worktree_path omitted
+#   tester stop (needs_changes) with workflow binding → worktree_path in suggestion
+#   tester stop (needs_changes) without binding → routes correctly, worktree_path omitted
 #
 # All cases exercise the real production path:
 #   synthetic JSON stdin → cc-policy dispatch process-stop → SQLite state
@@ -19,10 +19,8 @@
 # @rationale W-GWT-1 changes the planner→implementer direct route to
 #   planner→guardian(provision)→implementer. This test exercises each
 #   transition: planner routing, guardian provisioned routing, worktree_path
-#   carrier through suggestion text, and the rework path (reviewer
-#   needs_changes with workflow_bindings populated by simulated guardian
-#   provisioning). Phase 8 Slice 11 retired the legacy ``tester`` role;
-#   the evaluator slot in the rework path is owned by ``reviewer``.
+#   carrier through suggestion text, and the rework path (tester needs_changes
+#   with workflow_bindings populated by simulated guardian provisioning).
 
 set -euo pipefail
 
@@ -81,62 +79,6 @@ submit_completion() {
         --payload "$payload" >/dev/null 2>&1 || true
 }
 
-# Helper: seed the current planner contract path. Planner routing requires an
-# active planner lease, a valid completion record, and an active goal contract.
-seed_planner_next_work_item() {
-    local wf_id="$1"
-    local wt_path="$2"
-    PYTHONPATH="$REPO_ROOT" python3 - "$TEST_DB" "$wt_path" "$wf_id" <<'PYEOF'
-import sqlite3, sys
-from runtime.core import completions, decision_work_registry as dwr, leases
-from runtime.schemas import ensure_schema
-
-db_path, worktree_path, workflow_id = sys.argv[1], sys.argv[2], sys.argv[3]
-conn = sqlite3.connect(db_path)
-conn.row_factory = sqlite3.Row
-ensure_schema(conn)
-dwr.insert_goal(
-    conn,
-    dwr.GoalRecord(
-        goal_id=workflow_id,
-        desired_end_state="GWT routing scenario goal",
-        status="active",
-        autonomy_budget=5,
-    ),
-)
-lease = leases.issue(
-    conn,
-    role="planner",
-    workflow_id=workflow_id,
-    worktree_path=worktree_path,
-)
-completions.submit(
-    conn,
-    lease_id=lease["lease_id"],
-    workflow_id=workflow_id,
-    role="planner",
-    payload={"PLAN_VERDICT": "next_work_item", "PLAN_SUMMARY": "scenario"},
-)
-conn.close()
-PYEOF
-}
-
-# Helper: build a reviewer completion payload with valid REVIEW_FINDINGS_JSON.
-make_reviewer_payload() {
-    local verdict="$1"
-    local severity="$2"
-    local title="$3"
-    jq -nc \
-        --arg v "$verdict" \
-        --arg s "$severity" \
-        --arg t "$title" \
-        '{
-            REVIEW_VERDICT: $v,
-            REVIEW_HEAD_SHA: "abc123",
-            REVIEW_FINDINGS_JSON: ({findings: [{severity: $s, title: $t, detail: "ok"}]} | tojson)
-        }'
-}
-
 # Helper: bind a workflow to a worktree path (simulates guardian provisioning).
 # Positional args: workflow_id worktree_path branch
 bind_workflow() {
@@ -151,7 +93,6 @@ bind_workflow() {
 # ==========================================================================
 WD1="$TMP_DIR/wt-planner"
 mkdir -p "$WD1"
-seed_planner_next_work_item "wf-gwt-planner-e2e-001" "$WD1"
 OUT=$(call_process_stop "planner" "$WD1")
 NEXT=$(printf '%s' "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('next_role',''))" 2>/dev/null || echo "")
 CTX=$(printf '%s' "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('hookSpecificOutput',{}).get('additionalContext',''))" 2>/dev/null || true)
@@ -240,74 +181,74 @@ else
 fi
 
 # ==========================================================================
-# Test 3: reviewer stop (needs_changes) with workflow binding → worktree_path
+# Test 3: tester stop (needs_changes) with workflow binding → worktree_path
 #         encoded in suggestion (rework path, DEC-GUARD-WT-004)
 # ==========================================================================
-WD3="$TMP_DIR/wt-reviewer-nc"
+WD3="$TMP_DIR/wt-tester-nc"
 mkdir -p "$WD3"
 WF3="wf-gwt-nc-e2e-001"
 WORKTREE3="$TMP_DIR/.worktrees/feature-gwt-rework"
 # Register workflow binding (simulates prior guardian provisioning)
 bind_workflow "$WF3" "$WORKTREE3" "feature/gwt-rework"
-LEASE3=$(issue_lease "reviewer" "$WF3" "$WD3")
+LEASE3=$(issue_lease "tester" "$WF3" "$WD3")
 if [[ -n "$LEASE3" ]]; then
-    NC_PAYLOAD=$(make_reviewer_payload "needs_changes" "blocking" "needs rework")
-    submit_completion "reviewer" "$LEASE3" "$WF3" "$NC_PAYLOAD"
-    OUT=$(call_process_stop "reviewer" "$WD3")
+    NC_PAYLOAD='{"EVAL_VERDICT":"needs_changes","EVAL_TESTS_PASS":"no","EVAL_NEXT_ROLE":"implementer","EVAL_HEAD_SHA":"abc123"}'
+    submit_completion "tester" "$LEASE3" "$WF3" "$NC_PAYLOAD"
+    OUT=$(call_process_stop "tester" "$WD3")
     NEXT=$(printf '%s' "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('next_role',''))" 2>/dev/null || echo "")
     CTX=$(printf '%s' "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('hookSpecificOutput',{}).get('additionalContext',''))" 2>/dev/null || true)
     WTP=$(printf '%s' "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('worktree_path',''))" 2>/dev/null || echo "")
 
     if [[ "$NEXT" == "implementer" ]]; then
-        pass "reviewer (needs_changes+binding): next_role=implementer"
+        pass "tester (needs_changes+binding): next_role=implementer"
     else
-        fail "reviewer (needs_changes+binding): next_role=implementer (got: $NEXT)"
+        fail "tester (needs_changes+binding): next_role=implementer (got: $NEXT)"
     fi
 
     if [[ "$CTX" == *"worktree_path=$WORKTREE3"* ]]; then
-        pass "reviewer (needs_changes+binding): suggestion encodes worktree_path"
+        pass "tester (needs_changes+binding): suggestion encodes worktree_path"
     else
-        fail "reviewer (needs_changes+binding): suggestion encodes worktree_path (got: $CTX)"
+        fail "tester (needs_changes+binding): suggestion encodes worktree_path (got: $CTX)"
     fi
 
     if [[ "$WTP" == "$WORKTREE3" ]]; then
-        pass "reviewer (needs_changes+binding): worktree_path in result dict"
+        pass "tester (needs_changes+binding): worktree_path in result dict"
     else
-        fail "reviewer (needs_changes+binding): worktree_path in result dict (got: $WTP)"
+        fail "tester (needs_changes+binding): worktree_path in result dict (got: $WTP)"
     fi
 else
-    fail "reviewer (needs_changes+binding): could not issue lease — skipping checks"
+    fail "tester (needs_changes+binding): could not issue lease — skipping checks"
 fi
 
 # ==========================================================================
-# Test 4: reviewer stop (needs_changes) WITHOUT binding → routes correctly,
+# Test 4: tester stop (needs_changes) WITHOUT binding → routes correctly,
 #         worktree_path is empty (graceful degradation)
 # ==========================================================================
-WD4="$TMP_DIR/wt-reviewer-nc-nobind"
+WD4="$TMP_DIR/wt-tester-nc-nobind"
 mkdir -p "$WD4"
 WF4="wf-gwt-nc-nobind-e2e-001"
 # No bind_workflow call — simulates missing binding
-LEASE4=$(issue_lease "reviewer" "$WF4" "$WD4")
+LEASE4=$(issue_lease "tester" "$WF4" "$WD4")
 if [[ -n "$LEASE4" ]]; then
-    NC_PAYLOAD=$(make_reviewer_payload "needs_changes" "blocking" "needs rework")
-    submit_completion "reviewer" "$LEASE4" "$WF4" "$NC_PAYLOAD"
-    OUT=$(call_process_stop "reviewer" "$WD4")
+    NC_PAYLOAD='{"EVAL_VERDICT":"needs_changes","EVAL_TESTS_PASS":"no","EVAL_NEXT_ROLE":"implementer","EVAL_HEAD_SHA":"abc123"}'
+    submit_completion "tester" "$LEASE4" "$WF4" "$NC_PAYLOAD"
+    OUT=$(call_process_stop "tester" "$WD4")
     NEXT=$(printf '%s' "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('next_role',''))" 2>/dev/null || echo "")
     ERR=$(printf '%s' "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('error') or '')" 2>/dev/null || true)
 
     if [[ "$NEXT" == "implementer" ]]; then
-        pass "reviewer (needs_changes, no binding): next_role=implementer"
+        pass "tester (needs_changes, no binding): next_role=implementer"
     else
-        fail "reviewer (needs_changes, no binding): next_role=implementer (got: $NEXT)"
+        fail "tester (needs_changes, no binding): next_role=implementer (got: $NEXT)"
     fi
 
     if [[ -z "$ERR" || "$ERR" == "None" ]]; then
-        pass "reviewer (needs_changes, no binding): no error"
+        pass "tester (needs_changes, no binding): no error"
     else
-        fail "reviewer (needs_changes, no binding): no error (got: $ERR)"
+        fail "tester (needs_changes, no binding): no error (got: $ERR)"
     fi
 else
-    fail "reviewer (needs_changes, no binding): could not issue lease — skipping checks"
+    fail "tester (needs_changes, no binding): could not issue lease — skipping checks"
 fi
 
 # ==========================================================================
@@ -321,7 +262,6 @@ WF5="wf-gwt-chain-e2e-001"
 WORKTREE5="$TMP_DIR/.worktrees/feature-gwt-chain"
 
 # Step 1: planner stop
-seed_planner_next_work_item "$WF5" "$WD5_PLANNER"
 OUT5P=$(call_process_stop "planner" "$WD5_PLANNER")
 NEXT5P=$(printf '%s' "$OUT5P" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('next_role',''))" 2>/dev/null || echo "")
 AUTO5P=$(printf '%s' "$OUT5P" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('auto_dispatch',''))" 2>/dev/null || echo "")

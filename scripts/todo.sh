@@ -78,10 +78,69 @@ CONF
 # --- Cache ---
 
 TODO_CACHE="$HOME/.claude/.todo-count"
+TODO_HUD_CACHE="$HOME/.claude/.todo-hud-cache"
+TODO_HUD_STAMP="$HOME/.claude/.todo-hud-cache.stamp"
+TODO_HUD_CACHE_TTL="${TODO_HUD_CACHE_TTL:-300}"
+TODO_HUD_TIMEOUT="${TODO_HUD_TIMEOUT:-1.5}"
 
 update_todo_cache() {
     local count="${1:-0}"
     echo "$count" > "$TODO_CACHE"
+}
+
+todo_hud_cache_fresh() {
+    [[ -f "$TODO_HUD_STAMP" ]] || return 1
+
+    local stamp ttl now age
+    stamp=$(cat "$TODO_HUD_STAMP" 2>/dev/null || echo "0")
+    [[ "$stamp" =~ ^[0-9]+$ ]] || return 1
+    ttl="$TODO_HUD_CACHE_TTL"
+    [[ "$ttl" =~ ^[0-9]+$ ]] || ttl=300
+    now=$(date '+%s')
+    age=$((now - stamp))
+
+    [[ "$age" -ge 0 && "$age" -lt "$ttl" ]]
+}
+
+todo_hud_cache_store() {
+    local output="${1:-}"
+    mkdir -p "$(dirname "$TODO_HUD_CACHE")"
+    printf '%s' "$output" > "$TODO_HUD_CACHE"
+    date '+%s' > "$TODO_HUD_STAMP"
+}
+
+todo_hud_live_with_timeout() {
+    python3 - "$TODO_HUD_TIMEOUT" "$0" hud-live <<'PY'
+import os
+import signal
+import subprocess
+import sys
+
+try:
+    timeout = float(sys.argv[1])
+except ValueError:
+    timeout = 1.5
+
+process = subprocess.Popen(
+    sys.argv[2:],
+    stdout=subprocess.PIPE,
+    stderr=subprocess.DEVNULL,
+    text=True,
+    start_new_session=True,
+)
+try:
+    stdout, _ = process.communicate(timeout=timeout)
+except subprocess.TimeoutExpired:
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    process.wait()
+    sys.exit(124)
+
+sys.stdout.write(stdout)
+sys.exit(process.returncode)
+PY
 }
 
 # --- Helpers ---
@@ -145,7 +204,6 @@ ensure_global_repo() {
 cmd_add() {
     local title=""
     local scope="project"
-    local explicit_repo=""
     local priority=""
     local body="Captured via Claude Code /todo"
 
@@ -155,18 +213,6 @@ cmd_add() {
             --global)
                 scope="global"
                 shift ;;
-            --repo=*)
-                scope="repo"
-                explicit_repo="${1#--repo=}"
-                shift ;;
-            --repo)
-                scope="repo"
-                explicit_repo="${2:-}"
-                if [[ $# -ge 2 ]]; then
-                    shift 2
-                else
-                    shift
-                fi ;;
             --priority=*)
                 priority="${1#--priority=}"
                 shift ;;
@@ -185,11 +231,7 @@ cmd_add() {
 
     if [[ -z "$title" ]]; then
         echo "ERROR: No todo title provided." >&2
-        echo "Usage: todo.sh add \"title\" [--global|--repo=owner/repo] [--priority=high|medium|low]" >&2
-        exit 1
-    fi
-    if [[ "$scope" == "repo" && -z "$explicit_repo" ]]; then
-        echo "ERROR: --repo requires owner/repo." >&2
+        echo "Usage: todo.sh add \"title\" [--global] [--priority=high|medium|low]" >&2
         exit 1
     fi
 
@@ -197,11 +239,7 @@ cmd_add() {
     local target_repo=""
     local repo_flag=""
 
-    if [[ "$scope" == "repo" ]]; then
-        target_repo="$explicit_repo"
-        repo_flag="--repo $explicit_repo"
-        body="$body (repo: $explicit_repo)"
-    elif [[ "$scope" == "global" ]]; then
+    if [[ "$scope" == "global" ]]; then
         ensure_global_repo
         target_repo="$GLOBAL_REPO"
         repo_flag="--repo $GLOBAL_REPO"
@@ -564,6 +602,26 @@ cmd_hud() {
     fi
 }
 
+cmd_hud_cached() {
+    if todo_hud_cache_fresh; then
+        [[ -f "$TODO_HUD_CACHE" ]] && cat "$TODO_HUD_CACHE"
+        return 0
+    fi
+
+    local output status
+    status=0
+    output=$(todo_hud_live_with_timeout 2>/dev/null) || status=$?
+    if [[ "$status" -eq 0 ]]; then
+        todo_hud_cache_store "$output"
+        printf '%s' "$output"
+        return 0
+    fi
+
+    # HUD is advisory context only. On timeout/failure, return stale cache if any.
+    [[ -f "$TODO_HUD_CACHE" ]] && cat "$TODO_HUD_CACHE"
+    return 0
+}
+
 # --- Active session tracking ---
 
 cmd_claim() {
@@ -717,15 +775,20 @@ cmd_active() {
     fi
 }
 
-# --- Bootstrap (validate gh + resolve repo) ---
-
-require_gh
-resolve_global_repo
-
 # --- Main dispatch ---
 
 COMMAND="${1:-help}"
 shift || true
+
+if [[ "$COMMAND" == "hud-cached" ]]; then
+    cmd_hud_cached "$@"
+    exit 0
+fi
+
+# --- Bootstrap (validate gh + resolve repo) ---
+
+require_gh
+resolve_global_repo
 
 case "$COMMAND" in
     add)     cmd_add "$@" ;;
@@ -737,11 +800,12 @@ case "$COMMAND" in
     unclaim) cmd_unclaim "$@" ;;
     active)  cmd_active "$@" ;;
     hud)     cmd_hud "$@" ;;
+    hud-live) cmd_hud "$@" ;;
     help|*)
         echo "Claude Code Todo System"
         echo ""
         echo "Usage:"
-        echo "  todo.sh add \"title\" [--global|--repo=owner/repo] [--priority=high|medium|low] [--body=\"details\"]"
+        echo "  todo.sh add \"title\" [--global] [--priority=high|medium|low] [--body=\"details\"]"
         echo "  todo.sh list [--project|--global|--all] [--json]"
         echo "  todo.sh done <issue-number> [--global|--repo=owner/repo]"
         echo "  todo.sh stale [--days=14]"
@@ -750,6 +814,7 @@ case "$COMMAND" in
         echo "  todo.sh unclaim [--session=ID]"
         echo "  todo.sh active [--json]"
         echo "  todo.sh hud"
+        echo "  todo.sh hud-cached"
         echo ""
         echo "Persistence: GitHub Issues labeled '$LABEL'"
         echo "Global repo: $GLOBAL_REPO"

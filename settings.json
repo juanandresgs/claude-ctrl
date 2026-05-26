@@ -58,7 +58,7 @@
       "Read(**/*credentials*)"
     ],
     "ask": [],
-    "defaultMode": "bypassPermissions"
+    "defaultMode": "auto"
   },
   "model": "opus[1m]",
   "enableAllProjectMcpServers": true,
@@ -84,7 +84,7 @@
           {
             "type": "command",
             "command": "$HOME/.claude/hooks/prompt-submit.sh",
-            "timeout": 5
+            "timeout": 15
           }
         ]
       }
@@ -101,6 +101,16 @@
       }
     ],
     "PreToolUse": [
+      {
+        "matcher": "EnterWorktree",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/block-worktree-create.sh",
+            "timeout": 5
+          }
+        ]
+      },
       {
         "matcher": "Write|Edit",
         "hooks": [
@@ -202,16 +212,6 @@
             "async": true
           }
         ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$HOME/.claude/hooks/post-bash.sh",
-            "timeout": 10
-          }
-        ]
       }
     ],
     "Notification": [
@@ -253,12 +253,7 @@
           },
           {
             "type": "command",
-            "command": "$HOME/.claude/hooks/check-planner.sh",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "$HOME/.claude/hooks/post-task.sh",
+            "command": "$HOME/.claude/hooks/v6-result-submit.sh",
             "timeout": 5
           }
         ]
@@ -273,23 +268,13 @@
           },
           {
             "type": "command",
-            "command": "$HOME/.claude/hooks/check-implementer.sh",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "$HOME/.claude/hooks/implementer-critic.sh",
-            "timeout": 900
-          },
-          {
-            "type": "command",
-            "command": "$HOME/.claude/hooks/post-task.sh",
+            "command": "$HOME/.claude/hooks/v6-result-submit.sh",
             "timeout": 5
           }
         ]
       },
       {
-        "matcher": "guardian",
+        "matcher": "critic",
         "hooks": [
           {
             "type": "command",
@@ -298,12 +283,7 @@
           },
           {
             "type": "command",
-            "command": "$HOME/.claude/hooks/check-guardian.sh",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "$HOME/.claude/hooks/post-task.sh",
+            "command": "$HOME/.claude/hooks/v6-result-submit.sh",
             "timeout": 5
           }
         ]
@@ -318,12 +298,22 @@
           },
           {
             "type": "command",
-            "command": "$HOME/.claude/hooks/check-reviewer.sh",
+            "command": "$HOME/.claude/hooks/v6-result-submit.sh",
             "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "guardian",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{ cat; echo; } >> $HOME/.claude/runtime/dispatch-debug.jsonl",
+            "timeout": 3
           },
           {
             "type": "command",
-            "command": "$HOME/.claude/hooks/post-task.sh",
+            "command": "$HOME/.claude/hooks/v6-result-submit.sh",
             "timeout": 5
           }
         ]
@@ -355,7 +345,7 @@
           },
           {
             "type": "command",
-            "command": "$HOME/.claude/hooks/stop-advisor.sh",
+            "command": "$HOME/.claude/hooks/forward-motion.sh",
             "timeout": 5
           }
         ]
@@ -378,7 +368,7 @@
     "command": "$HOME/.claude/scripts/statusline.sh"
   },
   "enabledPlugins": {
-    "lua-lsp@claude-plugins-official": true
+    "codex@openai-codex": true
   },
   "extraKnownMarketplaces": {
     "claude-plugins-official": {
@@ -386,11 +376,20 @@
         "source": "github",
         "repo": "anthropics/claude-plugins-official"
       }
+    },
+    "openai-codex": {
+      "source": {
+        "source": "github",
+        "repo": "openai/codex-plugin-cc"
+      }
     }
   },
   "effortLevel": "high",
   "autoUpdatesChannel": "latest",
   "skipDangerousModePermissionPrompt": true,
+  "theme": "dark",
+  "verbose": true,
+  "skipAutoPermissionPrompt": true,
   "installation": {
     "method": "native"
   }

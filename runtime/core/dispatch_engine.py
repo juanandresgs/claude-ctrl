@@ -22,20 +22,14 @@ Rationale: post-task.sh contained ~200 lines of routing logic in bash including
   is determined. Releasing before routing made completion records unreachable
   because leases.get_current() only returns active leases.
 
-  Key invariant from DEC-COMPLETION-001: routing for reviewer and guardian is
+  Key invariant from DEC-COMPLETION-001: routing for tester and guardian is
   exclusively via completions.determine_next_role(). No case statement maps
   verdicts to roles in this module — that table lives only in completions.py.
 
-  Implementer critic enforcement: when critic_enabled_implementer_stop is true
-  (the default), implementer stops must have a persisted external critic review
-  with valid execution proof. With the critic loop active, implementer routing is
-  owned by critic_reviews:
-  READY_FOR_REVIEWER → reviewer, TRY_AGAIN → implementer, BLOCKED_BY_PLAN
-  → planner. CRITIC_UNAVAILABLE is retained as audit state but fails closed
-  instead of falling through to reviewer. The tester role is retired
-  (Phase 8 Slice 11) — it is no longer a known runtime type and stop events
-  that carry ``agent_type="tester"`` are handled by the generic unknown-type
-  path (silent exit).
+  Key invariant from DEC-EVAL-001: eval_state is written to 'pending' only for
+  the implementer role (post-task.sh was the sole writer for this transition).
+  Tester and guardian do not write eval_state here; check-tester.sh owns the
+  ready_for_guardian write.
 
 @decision DEC-STOP-ASSESS-002
 Title: agent_complete vs agent_stopped gating via stop_assessment event
@@ -56,8 +50,8 @@ Rationale: The heuristic (DEC-STOP-ASSESS-001) detects interrupted implementers
   via future-tense trailing signals — a narrow proxy. When IMPL_STATUS and
   IMPL_HEAD_SHA trailers are present and valid, the structured contract is
   authoritative for agent_complete vs agent_stopped. The heuristic is fallback
-  only when no valid completion record exists. The contract still affects stop
-  quality only. Implementer routing is owned separately by critic_reviews.
+  only when no valid completion record exists. Routing (implementer → tester)
+  is unchanged — the contract affects stop quality, not routing.
 
   Implementation: stop-event emission is deferred past the implementer role block
   so the contract lookup can override is_interrupted before the event is written.
@@ -89,54 +83,19 @@ Rationale: Guardian is the sole worktree lifecycle authority (INIT-GUARD-WT). Th
   extracts it and sets result["worktree_path"], the suggestion builder encodes it in the
   AUTO_DISPATCH line, and cli.py serializes it in the passthrough dict (DEC-GUARD-WT-003).
 
-  On rework cycles (reviewer needs_changes -> implementer), the worktree already exists.
+  On rework cycles (tester needs_changes -> implementer), the worktree already exists.
   dispatch_engine reads worktree_path from workflow_bindings via workflows.get_binding()
   and encodes it in the needs_changes AUTO_DISPATCH suggestion so the orchestrator can
   pass it to the re-dispatched implementer (DEC-GUARD-WT-004).
-
-@decision DEC-PHASE5-STOP-REVIEW-SEPARATION-001
-Title: Regular Stop review/advice is non-authoritative for workflow dispatch
-Status: accepted
-Rationale: The Codex stop-review gate (W-AD-3 / DEC-AD-002) was originally wired
-  into the auto_dispatch decision path to allow a Codex supervisor to halt the
-  workflow chain for human review. Phase 5 separates this: workflow auto_dispatch
-  is determined by runtime workflow facts only (next_role present, no PROCESS ERROR,
-  not interrupted). Regular Stop is deterministic advice only
-  (stop-advisor.sh); the deterministic SubagentStop Codex braid is the
-  runtime-owned implementer critic review consumed below. _check_codex_gate has
-  been deleted — no runtime consumer remains.
-
-@decision DEC-IMPLEMENTER-CRITIC-LOOP-001
-Title: Implementer inner-loop routing is owned by persisted critic reviews
-Status: accepted
-Rationale: The implementer previously routed straight to reviewer, forcing every
-  tactical deficiency to be adjudicated in the outer loop. The new critic loop
-  introduces a runtime-owned critic_reviews domain whose persisted, proven
-  verdicts drive implementer routing: READY_FOR_REVIEWER → reviewer, TRY_AGAIN
-  → implementer, BLOCKED_BY_PLAN → planner. CRITIC_UNAVAILABLE and missing or
-  invalid execution proof are infrastructure failures. Retry-limit and
-  repeated-fingerprint escalation are computed from critic_reviews state, not
-  from hook-local heuristics, so the routing authority stays in Python/runtime.
 """
 
 from __future__ import annotations
 
-import json
 import sqlite3
 import time
 from typing import Optional
 
-from runtime.core import (
-    completions,
-    critic_reviews,
-    critic_runs,
-    dispatch_shadow,
-    enforcement_config,
-    evaluation,
-    events,
-    leases,
-    reviewer_convergence,
-)
+from runtime.core import completions, evaluation, events, leases
 
 # ---------------------------------------------------------------------------
 # Public interface
@@ -157,14 +116,14 @@ def process_agent_stop(
     Args:
         conn:         Open SQLite connection with schema applied.
         agent_type:   Role string from the hook input (planner, implementer,
-                      reviewer, guardian). Unknown types return silently.
+                      tester, guardian). Unknown types return silently.
         project_root: Filesystem path to the project root. Used to resolve the
                       active lease via worktree path when no explicit lease_id
                       is supplied. May be empty string when unavailable.
 
     Returns:
         dict with:
-          next_role   str | None  — None means terminal planner verdict or unknown type.
+          next_role   str | None  — None means cycle complete or unknown type.
           workflow_id str         — resolved from active lease or empty string.
           suggestion  str         — human-readable dispatch hint for
                                     additionalContext in hookSpecificOutput.
@@ -178,38 +137,14 @@ def process_agent_stop(
         "error": None,
         "events": [],
         "auto_dispatch": False,
+        "codex_blocked": False,
+        "codex_reason": "",
         # W-GWT-1: guardian_mode distinguishes provision (planner→guardian) from
-        # merge (reviewer→guardian). Populated by the planner block only.
+        # merge (tester→guardian). Populated by the planner block only.
         "guardian_mode": "",
         # W-GWT-1: worktree_path is extracted from the guardian completion record
         # payload (provisioned verdict) or from workflow_bindings (rework path).
         "worktree_path": "",
-        # DEC-IMPLEMENTER-CRITIC-LOOP-001: implementer critic routing metadata.
-        "critic_found": False,
-        "critic_verdict": "",
-        "critic_provider": "",
-        "critic_summary": "",
-        "critic_detail": "",
-        "critic_findings": [],
-        "critic_next_steps": [],
-        "critic_artifact_path": "",
-        "critic_execution_proof": {},
-        "critic_execution_proof_valid": False,
-        "critic_disabled": False,
-        "critic_try_again_streak": 0,
-        "critic_retry_limit": 0,
-        "critic_repeated_fingerprint_streak": 0,
-        "critic_escalated": False,
-        "critic_escalation_reason": "",
-        # Reviewer → evaluation_state convergence bridge. Reviewer completions
-        # own readiness; evaluation_state remains the Guardian landing gate.
-        "evaluation_status": "",
-        "evaluation_head_sha": "",
-        "reviewer_convergence_reason": "",
-        "next_dispatch_id": None,
-        "work_item_id": "",
-        "landing_grant": None,
-        "grant_signal": "",
     }
 
     # Normalise capitalisation variants (matches bash `Plan` alias).
@@ -219,7 +154,7 @@ def process_agent_stop(
 
     # Exit silently for unknown types — hooks must not interfere with inputs
     # they do not own.
-    _known_types = {"planner", "implementer", "guardian", "reviewer"}
+    _known_types = {"planner", "implementer", "tester", "guardian"}
     if normalised not in _known_types:
         return result
 
@@ -248,124 +183,43 @@ def process_agent_stop(
     # ---------------------------------------------------------------------------
     # Role-specific routing
     # ---------------------------------------------------------------------------
-    # Phase 6 Slice 4: planner verdict extracted for the suggestion builder.
-    # Terminal verdicts (goal_complete, needs_user_decision, blocked_external)
-    # route to None; the suggestion builder emits explicit signals so the
-    # orchestrator knows the reason.
-    _planner_verdict = ""
-
     if normalised == "planner":
-        # Phase 6 Slice 4: planner routing consumes structured completion record
-        # via _route_from_completion → determine_next_role("planner", PLAN_VERDICT)
-        # → stage_registry. Replaces unconditional planner→guardian(provision).
-        next_role, error = _route_from_completion(
-            conn,
-            role="planner",
-            workflow_id=workflow_id,
-            active_lease_id=active_lease_id,
-        )
-        result["next_role"] = next_role
-        result["error"] = error
-        # W-GWT-1: when planner routes to guardian (next_work_item verdict),
-        # set guardian_mode=provision so guardian knows to provision a worktree.
-        if next_role == "guardian" and not error:
-            result["guardian_mode"] = "provision"
-        # Extract planner verdict for terminal suggestion signals.
-        if not error and active_lease_id:
+        # W-GWT-1 (DEC-GUARD-WT-001): Route planner -> guardian for worktree
+        # provisioning. Guardian determines its mode from guardian_mode field.
+        result["next_role"] = "guardian"
+        result["guardian_mode"] = "provision"
+        # workflow_id at planner stop is best-effort (DEC-GUARD-WT-006 R3).
+        # _resolve_lease_context() already ran above; if it yielded a
+        # workflow_id (planner held a pre-issued lease), use it. If not, try
+        # the branch-derived fallback. Either way, routing is not gated on it —
+        # the orchestrator has workflow_id from its plan context and passes it
+        # as a CLI argument to the provision command.
+        if not workflow_id:
             try:
-                _pcomp = completions.latest(conn, lease_id=active_lease_id)
-                if _pcomp and _pcomp.get("role") == "planner":
-                    _planner_verdict = _pcomp.get("verdict", "")
+                from runtime.core import policy_utils
+
+                workflow_id = policy_utils.current_workflow_id(project_root)
+                result["workflow_id"] = workflow_id
             except Exception:
-                pass
-
-        # Phase 6 Slice 6: autonomy-budget enforcement for planner continuation.
-        # When planner routes to guardian (next_work_item verdict), check the
-        # goal contract's autonomy budget. If budget is exhausted, goal is
-        # not active, or no goal contract exists, suppress auto-dispatch and
-        # surface a user-boundary signal. Fail closed: if the budget check
-        # raises, do NOT auto-dispatch guardian — surface an error instead.
-        # goal_continuation is the sole budget authority — hooks must not
-        # duplicate this logic.
-        if next_role == "guardian" and not error and workflow_id:
-            try:
-                from runtime.core import goal_continuation as gc
-
-                cont = gc.check_continuation_budget(conn, workflow_id=workflow_id)
-                if not cont.allowed:
-                    result["next_role"] = None
-                    result["guardian_mode"] = ""
-                    result["budget_exhausted"] = True
-                    result["budget_signal"] = cont.signal
-            except Exception as exc:
-                # Fail closed: budget authority failure must not allow
-                # ungatted auto-dispatch to guardian.
-                result["next_role"] = None
-                result["guardian_mode"] = ""
-                result["budget_exhausted"] = True
-                result["budget_signal"] = "BUDGET_CHECK_FAILED"
-                result["error"] = (
-                    f"PROCESS ERROR: BUDGET_CHECK_FAILED — "
-                    f"Goal-continuation budget check failed: {exc}"
-                )
-
-        # Phase 6 Slice 6: update goal status for terminal planner verdicts.
-        if _planner_verdict and not error and workflow_id:
-            try:
-                from runtime.core import goal_continuation as gc
-
-                gc.update_goal_status_for_verdict(
-                    conn, workflow_id=workflow_id, verdict=_planner_verdict
-                )
-            except Exception:
-                pass  # Goal-status update is best-effort.
+                pass  # Best-effort; omit from suggestion if unavailable.
 
     elif normalised == "implementer":
-        critic_enabled = _implementer_critic_enabled(
-            conn,
-            workflow_id=workflow_id,
-            project_root=project_root,
-        )
-        if critic_enabled:
-            # Strict default: implementer routing is blocked until the dedicated
-            # external critic lane persists a proven routing verdict.
-            result["next_role"] = None
-        else:
-            result["critic_disabled"] = True
-            result["next_role"] = "reviewer"
-            try:
-                events.emit(
-                    conn,
-                    type="implementer_critic_disabled",
-                    source="dispatch_engine",
-                    detail=(
-                        "critic_enabled_implementer_stop=false; "
-                        f"routing implementer directly to reviewer for {workflow_id or project_root}"
-                    ),
-                )
-                result["events"].append({"type": "implementer_critic_disabled"})
-            except Exception:
-                pass
-
-        # Populate worktree_path so the reviewer runs in the same worktree
-        # as the implementer. Prefer the live worktree root, then refine from
-        # workflow bindings when available.
-        if project_root:
-            result["worktree_path"] = project_root
+        result["next_role"] = "tester"
+        # Set eval_state = pending so the tester knows fresh work awaits.
+        # This is the sole post-task writer for the pending transition
+        # (DEC-EVAL-001). Skip for the claude meta-repo (no workflow to track).
         if workflow_id:
             try:
-                from runtime.core import workflows
-
-                binding = workflows.get_binding(conn, workflow_id)
-                if binding and binding.get("worktree_path"):
-                    result["worktree_path"] = binding.get("worktree_path") or ""
+                evaluation.set_status(conn, workflow_id, "pending")
+                evt_id = events.emit(conn, type="eval_pending", detail=workflow_id)
+                result["events"].append({"type": "eval_pending", "id": evt_id})
             except Exception:
-                pass  # Advisory; routing is not gated on the binding lookup.
+                pass  # Best-effort; routing is not gated on eval write.
 
         # Check for structured completion contract (DEC-IMPL-CONTRACT-001).
         # When present and valid, trust IMPL_STATUS over the stop-assessment
         # heuristic. When absent or invalid, the heuristic from above still
-        # applies. Routing (→ reviewer) is unchanged in all cases.
+        # applies. Routing (→ tester) is unchanged in all cases.
         if active_lease_id:
             try:
                 impl_comp = completions.latest(conn, lease_id=active_lease_id)
@@ -392,127 +246,20 @@ def process_agent_stop(
             except Exception:
                 pass  # Contract lookup is best-effort; never block routing.
 
-        critic_resolution = None
-        if critic_enabled and workflow_id:
-            try:
-                critic_resolution = critic_reviews.assess_latest(
-                    conn,
-                    workflow_id=workflow_id,
-                    project_root=project_root,
-                )
-            except Exception:
-                critic_resolution = None
-
-        if critic_resolution and critic_resolution.found:
-            result["critic_found"] = True
-            result["critic_verdict"] = critic_resolution.verdict
-            result["critic_provider"] = critic_resolution.provider
-            result["critic_summary"] = critic_resolution.summary
-            result["critic_detail"] = critic_resolution.detail
-            result["critic_findings"] = critic_resolution.findings
-            result["critic_next_steps"] = critic_resolution.next_steps
-            result["critic_artifact_path"] = critic_resolution.artifact_path
-            result["critic_execution_proof"] = critic_resolution.execution_proof
-            result["critic_execution_proof_valid"] = (
-                critic_resolution.execution_proof_valid
-            )
-            result["critic_try_again_streak"] = critic_resolution.try_again_streak
-            result["critic_retry_limit"] = critic_resolution.retry_limit
-            result["critic_repeated_fingerprint_streak"] = (
-                critic_resolution.repeated_fingerprint_streak
-            )
-            result["critic_escalated"] = critic_resolution.escalated
-            result["critic_escalation_reason"] = critic_resolution.escalation_reason
-            if critic_resolution.verdict == "CRITIC_UNAVAILABLE":
-                result["next_role"] = None
-                result["error"] = (
-                    "PROCESS ERROR: implementer critic did not run "
-                    "(CRITIC_UNAVAILABLE)."
-                )
-            elif not critic_resolution.execution_proof_valid:
-                result["next_role"] = None
-                result["error"] = (
-                    "PROCESS ERROR: implementer critic execution proof invalid."
-                )
-            elif critic_resolution.verdict not in critic_reviews.ROUTABLE_VERDICTS:
-                result["next_role"] = None
-                result["error"] = (
-                    f"PROCESS ERROR: implementer critic verdict {critic_resolution.verdict} "
-                    "is not routable."
-                )
-            else:
-                result["next_role"] = critic_resolution.next_role
-            if critic_resolution.next_role == "planner" and not result["error"]:
-                result["worktree_path"] = ""
-            elif (
-                critic_resolution.next_role == "implementer"
-                and not result["worktree_path"]
-                and not result["error"]
-            ):
-                result["worktree_path"] = project_root or ""
-        elif critic_enabled:
-            result["next_role"] = None
-            result["error"] = "PROCESS ERROR: implementer critic did not run."
-
-        if result["next_role"] == "reviewer" and workflow_id and not result["error"]:
-            grant = _landing_grant_for_active_work_item(conn, workflow_id, active_lease_id)
-            if grant:
-                result["work_item_id"] = grant.get("work_item_id", "") or ""
-                result["landing_grant"] = grant
-                if not grant.get("can_request_review", True):
-                    result["next_role"] = None
-                    result["grant_signal"] = (
-                        "USER_DECISION_REQUIRED: work-item landing grant disables "
-                        f"reviewer handoff for {result['work_item_id'] or workflow_id}"
-                    )
-                    try:
-                        evt_id = events.emit(
-                            conn,
-                            type="work_item_grant_blocked_review",
-                            source="dispatch_engine",
-                            detail=result["grant_signal"],
-                        )
-                        result["events"].append(
-                            {"type": "work_item_grant_blocked_review", "id": evt_id}
-                        )
-                    except Exception:
-                        pass
-
-        if active_lease_id:
-            _safe_release(conn, active_lease_id)
-
-    elif normalised == "reviewer":
+    elif normalised == "tester":
         next_role, error = _route_from_completion(
             conn,
-            role="reviewer",
+            role="tester",
             workflow_id=workflow_id,
             active_lease_id=active_lease_id,
         )
         result["next_role"] = next_role
         result["error"] = error
-        if workflow_id and active_lease_id and not error:
-            sync = _sync_reviewer_evaluation_state(
-                conn,
-                workflow_id=workflow_id,
-                active_lease_id=active_lease_id,
-            )
-            if sync:
-                result["evaluation_status"] = sync.get("status", "")
-                result["evaluation_head_sha"] = sync.get("head_sha", "")
-                result["reviewer_convergence_reason"] = sync.get("reason", "")
-                if next_role == "guardian" and sync.get("status") != "ready_for_guardian":
-                    result["next_role"] = None
-                    result["error"] = (
-                        "PROCESS ERROR: Reviewer emitted ready_for_guardian but "
-                        f"readiness did not converge ({sync.get('reason', 'unknown')})."
-                    )
-        # Rework path: when reviewer routes to implementer (needs_changes),
-        # the worktree already exists. Read worktree_path from workflow
-        # bindings so the orchestrator can pass it in the implementer
-        # re-dispatch context. (The legacy tester needs_changes path that
-        # originally sourced this pattern was retired in Phase 8 Slice 11;
-        # reviewer needs_changes is now the sole producer of this
-        # DEC-GUARD-WT-004 re-dispatch shape.)
+        # W-GWT-1 rework path (DEC-GUARD-WT-004): when tester routes to
+        # implementer (needs_changes), the worktree already exists. Read
+        # worktree_path from workflow_bindings so the orchestrator can pass
+        # it in the implementer re-dispatch context. Best-effort — routing
+        # is not gated on the binding lookup.
         if next_role == "implementer" and workflow_id and not error:
             try:
                 from runtime.core import workflows
@@ -522,16 +269,6 @@ def process_agent_stop(
                     result["worktree_path"] = binding.get("worktree_path") or ""
             except Exception:
                 pass  # Advisory; routing is already determined.
-        if workflow_id and not error:
-            try:
-                critic_runs.mark_fallback_completed(
-                    conn,
-                    workflow_id=workflow_id,
-                    fallback="reviewer",
-                    summary="Reviewer fallback completed after critic unavailability.",
-                )
-            except Exception:
-                pass  # Telemetry only; reviewer routing remains authoritative.
 
     elif normalised == "guardian":
         next_role, error, worktree_path = _route_from_guardian_completion(
@@ -543,17 +280,6 @@ def process_agent_stop(
         result["error"] = error
         if worktree_path:
             result["worktree_path"] = worktree_path
-        if workflow_id and active_lease_id and not error:
-            landing_projection = _project_guardian_landing_to_work_item(
-                conn,
-                workflow_id=workflow_id,
-                active_lease_id=active_lease_id,
-            )
-            if landing_projection:
-                result["work_item_id"] = landing_projection.get("work_item_id", "")
-                result["work_item_status_projected"] = landing_projection.get("status", "")
-                result["landing_head_sha"] = landing_projection.get("head_sha", "")
-                result["events"].append({"type": "work_item_landed"})
 
     # ---------------------------------------------------------------------------
     # Emit stop audit event (deferred so implementer contract can override
@@ -576,26 +302,28 @@ def process_agent_stop(
     #   - no PROCESS ERROR occurred
     #   - agent was not interrupted mid-task
     #
-    # False for: interrupted agents, routing errors, planner terminal states
-    # (goal_complete / blocked_external), unknown agent types.
+    # False for: interrupted agents, routing errors, terminal states
+    # (cycle complete after guardian committed/merged), unknown agent types.
     # ---------------------------------------------------------------------------
     result["auto_dispatch"] = (
         result["next_role"] is not None
         and result["next_role"] != ""
         and result["error"] is None
-        and (
-            not is_interrupted
-            or (normalised == "implementer" and bool(result.get("critic_found")))
-        )
+        and not is_interrupted
     )
 
     # ---------------------------------------------------------------------------
-    # DEC-PHASE5-STOP-REVIEW-SEPARATION-001: Codex stop-review gate is NOT
-    # consulted for workflow auto-dispatch decisions. auto_dispatch is
-    # determined by runtime workflow facts only (next_role present, no error,
-    # not interrupted). Regular Stop advice/review is not read here;
-    # implementer critic reviews are the only Codex verdicts consumed here.
+    # Codex stop-review gate (W-AD-3 — DEC-AD-002)
+    #
+    # Only runs when auto_dispatch is already True — no point querying the gate
+    # if routing already blocked. Advisory: errors never block routing.
     # ---------------------------------------------------------------------------
+    if result["auto_dispatch"]:
+        codex_blocked, codex_reason = _check_codex_gate(conn, workflow_id)
+        if codex_blocked:
+            result["auto_dispatch"] = False
+            result["codex_blocked"] = True
+            result["codex_reason"] = codex_reason
 
     # ---------------------------------------------------------------------------
     # Build suggestion for hookSpecificOutput additionalContext
@@ -608,33 +336,11 @@ def process_agent_stop(
     # Encoding rules:
     #   planner -> guardian:     AUTO_DISPATCH: guardian (mode=provision, workflow_id=W)
     #   guardian -> implementer: AUTO_DISPATCH: implementer (worktree_path=X, workflow_id=W)
-    #   reviewer needs_changes:  AUTO_DISPATCH: implementer (worktree_path=X, workflow_id=W)
+    #   tester needs_changes:    AUTO_DISPATCH: implementer (worktree_path=X, workflow_id=W)
     #   all other transitions:   AUTO_DISPATCH: <role> (workflow_id=W)
     # ---------------------------------------------------------------------------
     if result["error"]:
-        # DEC-CRITIC-BLOCKED-002: when critic_enabled=True and the implementer stop
-        # has no matching critic_reviews row, dispatch_engine already sets
-        # error="PROCESS ERROR: implementer critic did not run." with next_role=None.
-        # The orchestrator's chain-stop rule fires on BLOCKED, ERROR, or PROCESS ERROR,
-        # but human transcripts sometimes bypass the PROCESS ERROR check when the
-        # implementer itself emitted READY_FOR_REVIEWER in its response text.
-        # Adding an explicit BLOCKED: marker on its own line makes the signal
-        # grep-able and unambiguous in additionalContext.  Both lines are preserved
-        # so that any parser relying on PROCESS ERROR continues to work.
-        _error_str = str(result["error"])
-        _critic_missing_errors = {
-            "PROCESS ERROR: implementer critic did not run.",
-            "PROCESS ERROR: implementer critic did not run (CRITIC_UNAVAILABLE).",
-            "PROCESS ERROR: implementer critic execution proof invalid.",
-        }
-        if _error_str in _critic_missing_errors:
-            result["suggestion"] = (
-                "BLOCKED: implementer critic did not run; "
-                "routing back to implementer is mandatory before reviewer.\n"
-                + _error_str
-            )
-        else:
-            result["suggestion"] = _error_str
+        result["suggestion"] = result["error"]
     elif result["next_role"]:
         if result["auto_dispatch"]:
             # Machine-parseable prefix: orchestrator can auto-dispatch without
@@ -646,7 +352,7 @@ def process_agent_stop(
 
         # Build the structured parameter block (W-GWT-1).
         # planner -> guardian: encode mode=provision
-        # guardian/reviewer -> implementer with worktree: encode worktree_path
+        # guardian/tester -> implementer with worktree: encode worktree_path
         params: list[str] = []
         guardian_mode = result.get("guardian_mode", "")
         worktree_path = result.get("worktree_path", "")
@@ -659,57 +365,27 @@ def process_agent_stop(
         if params:
             suggestion += f" ({', '.join(params)})"
 
-        critic_suffix = _format_critic_context(result)
-        if critic_suffix:
-            suggestion += critic_suffix
-
         result["suggestion"] = suggestion
-    elif normalised == "planner" and not result["error"]:
-        # Planner terminal or budget-gated state: next_role=None.
-        # Phase 6 Slice 6: budget_signal takes precedence over terminal signals
-        # when the planner verdict was next_work_item but budget enforcement
-        # suppressed auto-dispatch.
-        budget_signal = result.get("budget_signal", "")
-        if budget_signal:
-            result["suggestion"] = budget_signal
-        else:
-            # Terminal planner verdicts emit explicit signals:
-            #   goal_complete       → GOAL_COMPLETE (all work items done)
-            #   needs_user_decision → USER_DECISION_REQUIRED (user input needed)
-            #   blocked_external    → BLOCKED_EXTERNAL (external dependency)
-            _PLANNER_TERMINAL_SIGNALS = {
-                "goal_complete": "GOAL_COMPLETE",
-                "needs_user_decision": "USER_DECISION_REQUIRED",
-                "blocked_external": "BLOCKED_EXTERNAL",
-            }
-            signal = _PLANNER_TERMINAL_SIGNALS.get(_planner_verdict, "")
-            if signal:
-                result["suggestion"] = signal
-        if _planner_verdict == "goal_complete":
-            try:
-                events.emit(
-                    conn,
-                    type="cycle_complete",
-                    detail="Planner goal_complete — all work items done",
-                )
-            except Exception:
-                pass
-    elif result.get("grant_signal"):
-        result["suggestion"] = result["grant_signal"]
-    elif normalised == "guardian" and not result["error"] and not result["next_role"]:
-        # Guardian terminal state (should not occur with stage_registry routing,
-        # but retained as a safety net for unknown verdicts).
+    elif normalised == "guardian" and not result["error"]:
+        # Terminal state — cycle complete.
+        try:
+            events.emit(
+                conn, type="cycle_complete", detail="Guardian completed — dispatch cycle done"
+            )
+        except Exception:
+            pass
         result["suggestion"] = ""
 
-    # DEC-PHASE5-STOP-REVIEW-SEPARATION-001: Codex block reason no longer
-    # appended to workflow suggestion. Stop-review is a separate lane.
+    # Append Codex block reason when gate fired.
+    if result.get("codex_blocked"):
+        result["suggestion"] = (result["suggestion"] or "") + (
+            f"\nCODEX BLOCK: {result['codex_reason']}"
+        )
 
     # Append interruption warning to suggestion when check-* hooks flagged an
     # interrupted stop. Advisory only — does not change routing.
     try:
-        if is_interrupted and not (
-            normalised == "implementer" and bool(result.get("critic_found"))
-        ):
+        if is_interrupted:
             warning = (
                 f"\nWARNING: Agent appears interrupted mid-task"
                 f"{': ' + _interrupt_reason if _interrupt_reason else ''}. "
@@ -719,51 +395,6 @@ def process_agent_stop(
     except NameError:
         pass  # is_interrupted not set if emit block raised before assignment.
 
-    # ---------------------------------------------------------------------------
-    # Shadow observer emission (DEC-CLAUDEX-DISPATCH-SHADOW-001)
-    #
-    # Best-effort side-channel that records what the target ClauDEX stage
-    # registry would have decided for this same (role, verdict) pair. Zero
-    # routing effect: wrapped in a broad try/except, never mutates ``result``,
-    # never reads from anything except the completion record that the live
-    # path already consulted. When the live path errored, skipped altogether
-    # since there is no routing decision to compare against.
-    # ---------------------------------------------------------------------------
-    try:
-        if result["error"] is None:
-            _emit_shadow_stage_decision(
-                conn,
-                live_role=normalised,
-                result=result,
-                active_lease_id=active_lease_id,
-                workflow_id=workflow_id,
-            )
-    except Exception:
-        pass  # Shadow emission must never affect live routing (DEC-CLAUDEX-DISPATCH-SHADOW-001).
-
-    if result.get("auto_dispatch") and result.get("next_role") and workflow_id:
-        try:
-            result["next_dispatch_id"] = _persist_next_dispatch_action(
-                conn,
-                workflow_id=workflow_id,
-                source_role=normalised,
-                next_role=str(result["next_role"]),
-                worktree_path=str(result.get("worktree_path") or ""),
-                guardian_mode=str(result.get("guardian_mode") or ""),
-                reason=str(result.get("suggestion") or ""),
-                payload={
-                    "workflow_id": workflow_id,
-                    "source_role": normalised,
-                    "next_role": result.get("next_role"),
-                    "worktree_path": result.get("worktree_path") or "",
-                    "guardian_mode": result.get("guardian_mode") or "",
-                    "auto_dispatch": result.get("auto_dispatch"),
-                    "critic_verdict": result.get("critic_verdict") or "",
-                },
-            )
-        except Exception:
-            pass
-
     return result
 
 
@@ -772,230 +403,56 @@ def process_agent_stop(
 # ---------------------------------------------------------------------------
 
 
-def _persist_next_dispatch_action(
+def _check_codex_gate(
     conn: sqlite3.Connection,
-    *,
     workflow_id: str,
-    source_role: str,
-    next_role: str,
-    worktree_path: str,
-    guardian_mode: str,
-    reason: str,
-    payload: dict,
-) -> int:
-    """Persist the structured next dispatch action.
+) -> tuple[bool, str]:
+    """Check if the Codex stop-review gate blocked auto-dispatch (W-AD-3).
 
-    The hook suggestion remains a human view. This table is the runtime-owned
-    carrier for the next dispatch parameters.
+    Queries the events table for the most recent codex_stop_review event
+    for the current workflow within a 60-second window. Returns (blocked, reason).
+
+    The gate is advisory: any exception during lookup is swallowed and the
+    function returns (False, "") so routing is never blocked by a gate error.
+
+    Args:
+        conn:        Open SQLite connection with schema applied.
+        workflow_id: Current workflow_id. The Codex hook writes it into
+                     events.source as ``workflow:<id>`` and the gate only
+                     consults events carrying that exact scope key.
+
+    Returns:
+        (blocked, reason) — blocked is True only when the most recent
+        codex_stop_review event within 60 seconds contains "VERDICT: BLOCK".
+        reason is the human review reason from the detail string, with any
+        ``workflow=<id> |`` prefix stripped away.
     """
-    now = int(time.time())
-    with conn:
-        cur = conn.execute(
-            """
-            INSERT INTO dispatch_next_actions (
-                workflow_id, source_role, next_role, worktree_path,
-                guardian_mode, reason, payload_json, status, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
-            """,
-            (
-                workflow_id,
-                source_role,
-                next_role,
-                worktree_path,
-                guardian_mode,
-                reason,
-                json.dumps(payload, sort_keys=True),
-                now,
-            ),
-        )
-    return int(cur.lastrowid)
-
-
-def _implementer_critic_enabled(
-    conn: sqlite3.Connection,
-    *,
-    workflow_id: str = "",
-    project_root: str = "",
-) -> bool:
-    """Return whether implementer stop must have an external critic review."""
-
-    raw = enforcement_config.get(
-        conn,
-        "critic_enabled_implementer_stop",
-        workflow_id=workflow_id,
-        project_root=project_root,
-    )
-    if raw is None:
-        return True
-    return str(raw).strip().lower() != "false"
-
-
-def _landing_grant_for_active_work_item(
-    conn: sqlite3.Connection,
-    workflow_id: str,
-    active_lease_id: str,
-) -> Optional[dict]:
-    """Return the effective work-item grant for the active dispatch, if known."""
     if not workflow_id:
-        return None
+        return False, ""
 
-    work_item_id = _work_item_id_for_active_dispatch(
-        conn,
-        workflow_id=workflow_id,
-        active_lease_id=active_lease_id,
-    )
-    if not work_item_id:
-        return None
+    source_key = f"workflow:{workflow_id}"
 
     try:
-        from runtime.core import work_item_grants
-
-        return work_item_grants.effective(
+        recent = events.query(
             conn,
-            workflow_id=workflow_id,
-            work_item_id=work_item_id,
-        ).as_dict()
-    except Exception:
-        return None
-
-
-def _work_item_id_for_active_dispatch(
-    conn: sqlite3.Connection,
-    *,
-    workflow_id: str,
-    active_lease_id: str,
-) -> str:
-    """Resolve the work item bound to the current dispatch lease."""
-    work_item_id = ""
-    if active_lease_id:
-        try:
-            row = conn.execute(
-                """
-                SELECT work_item_id
-                FROM dispatch_attempts
-                WHERE lease_id = ? AND work_item_id IS NOT NULL AND work_item_id != ''
-                ORDER BY created_at DESC, id DESC
-                LIMIT 1
-                """,
-                (active_lease_id,),
-            ).fetchone()
-            if row:
-                work_item_id = row["work_item_id"] or ""
-        except sqlite3.OperationalError:
-            work_item_id = ""
-
-        if not work_item_id:
-            try:
-                lease = leases.get(conn, active_lease_id)
-                metadata = json.loads(lease.get("metadata_json") or "{}") if lease else {}
-                if isinstance(metadata, dict):
-                    work_item_id = str(metadata.get("work_item_id") or "")
-            except (TypeError, json.JSONDecodeError):
-                work_item_id = ""
-
-        if not work_item_id:
-            try:
-                comp = completions.latest(conn, lease_id=active_lease_id)
-                payload = comp.get("payload_json") if comp else {}
-                if isinstance(payload, dict):
-                    work_item_id = str(payload.get("WORK_ITEM_ID") or "")
-            except Exception:
-                work_item_id = ""
-
-    if not work_item_id:
-        try:
-            rows = conn.execute(
-                """
-                SELECT work_item_id
-                FROM work_items
-                WHERE workflow_id = ?
-                  AND status IN ('in_progress', 'in_review', 'ready_to_land')
-                ORDER BY created_at ASC, work_item_id ASC
-                """,
-                (workflow_id,),
-            ).fetchall()
-            if len(rows) == 1:
-                work_item_id = rows[0]["work_item_id"] or ""
-        except sqlite3.OperationalError:
-            work_item_id = ""
-
-    return work_item_id
-
-
-def _project_guardian_landing_to_work_item(
-    conn: sqlite3.Connection,
-    *,
-    workflow_id: str,
-    active_lease_id: str,
-) -> dict:
-    """Mark the active work item landed after a valid Guardian landing."""
-    try:
-        comp = completions.latest(conn, lease_id=active_lease_id)
-    except Exception:
-        return {}
-    if not comp or comp.get("role") != "guardian":
-        return {}
-    if not (comp.get("valid") == 1 or comp.get("valid") is True):
-        return {}
-
-    verdict = comp.get("verdict") or ""
-    if verdict not in {"committed", "merged", "pushed"}:
-        return {}
-
-    payload = comp.get("payload_json") or {}
-    if not isinstance(payload, dict):
-        payload = {}
-
-    work_item_id = _work_item_id_for_active_dispatch(
-        conn,
-        workflow_id=workflow_id,
-        active_lease_id=active_lease_id,
-    )
-    if not work_item_id:
-        return {}
-
-    head_sha = ""
-    for key in (
-        "LANDING_HEAD_SHA",
-        "MERGE_COMMIT_SHA",
-        "FINAL_HEAD_SHA",
-        "HEAD_SHA",
-        "COMMIT_SHA",
-    ):
-        value = str(payload.get(key) or "").strip()
-        if value:
-            head_sha = value
-            break
-
-    now = int(time.time())
-    with conn:
-        cursor = conn.execute(
-            """
-            UPDATE work_items
-            SET status = 'landed',
-                head_sha = CASE WHEN ? != '' THEN ? ELSE head_sha END,
-                updated_at = ?
-            WHERE workflow_id = ?
-              AND work_item_id = ?
-              AND status != 'landed'
-              AND status != 'abandoned'
-            """,
-            (head_sha, head_sha, now, workflow_id, work_item_id),
+            type="codex_stop_review",
+            source=source_key,
+            since=int(time.time()) - 60,
+            limit=1,
         )
-
-    if cursor.rowcount == 0:
-        return {}
-
-    try:
-        events.emit(
-            conn,
-            type="work_item_landed",
-            source="dispatch_engine",
-            detail=f"Guardian {verdict} projected work_item {work_item_id} to landed",
-        )
+        for evt in recent:
+            detail = evt.get("detail") or ""
+            if "VERDICT: BLOCK" in detail:
+                # Strip the verdict prefix, then drop the workflow marker segment
+                # when the hook wrote the compatibility format:
+                #   VERDICT: BLOCK — workflow=<id> | <reason>
+                reason = detail.split("VERDICT: BLOCK", 1)[1].strip().lstrip("\u2014- ").strip()
+                if reason.startswith("workflow=") and "|" in reason:
+                    reason = reason.split("|", 1)[1].strip()
+                return True, reason or "Codex review blocked"
     except Exception:
-        pass
-    return {"work_item_id": work_item_id, "status": "landed", "head_sha": head_sha}
+        pass  # Advisory; never block routing on gate errors (DEC-AD-003).
+    return False, ""
 
 
 def _resolve_stop_assessment_wf_id(
@@ -1114,74 +571,6 @@ def _resolve_lease_context(
     return "", ""
 
 
-def _sync_reviewer_evaluation_state(
-    conn: sqlite3.Connection,
-    *,
-    workflow_id: str,
-    active_lease_id: str,
-) -> dict:
-    """Project reviewer completion into the Guardian landing readiness store.
-
-    Reviewer completions and findings are the review authority. Guardian landing
-    policies intentionally read ``evaluation_state`` as their fast gate, so the
-    dispatch stop path is the single bridge between those domains.
-    """
-    try:
-        comp = completions.latest(conn, lease_id=active_lease_id)
-    except Exception:
-        return {}
-
-    if not comp or comp.get("role") != "reviewer":
-        return {}
-    if not (comp.get("valid") == 1 or comp.get("valid") is True):
-        return {}
-
-    verdict = comp.get("verdict") or ""
-    payload = comp.get("payload_json") or {}
-    head_sha = payload.get("REVIEW_HEAD_SHA") if isinstance(payload, dict) else ""
-    head_sha = str(head_sha or "").strip()
-
-    status = ""
-    reason = verdict
-    blockers = 0
-
-    if verdict == "ready_for_guardian":
-        try:
-            readiness = reviewer_convergence.assess(
-                conn,
-                workflow_id=workflow_id,
-                current_head_sha=head_sha,
-            )
-            reason = readiness.reason
-            blockers = readiness.open_blocking_count
-            status = "ready_for_guardian" if readiness.ready_for_guardian else "needs_changes"
-        except Exception as exc:
-            reason = f"reviewer_convergence_error:{exc}"
-            status = "needs_changes"
-    elif verdict in {"needs_changes", "blocked_by_plan"}:
-        status = verdict
-    else:
-        return {}
-
-    try:
-        evaluation.set_status(
-            conn,
-            workflow_id,
-            status,
-            head_sha=head_sha or None,
-            blockers=blockers,
-        )
-        events.emit(
-            conn,
-            type="reviewer_evaluation_state",
-            detail=f"Reviewer verdict {verdict} projected to evaluation_state={status} for {workflow_id}",
-        )
-    except Exception:
-        return {}
-
-    return {"status": status, "head_sha": head_sha, "reason": reason}
-
-
 def _route_from_completion(
     conn: sqlite3.Connection,
     role: str,
@@ -1198,7 +587,7 @@ def _route_from_completion(
 
     Returns:
         (next_role, error) — exactly one will be non-None on failure,
-        next_role may be None for planner terminal verdicts or unknown combos.
+        next_role may be None for cycle-complete terminal states.
     """
     if not workflow_id:
         # No workflow_id resolvable at all — cannot route.
@@ -1209,7 +598,7 @@ def _route_from_completion(
         return None, error
 
     if not active_lease_id:
-        # No active lease — reviewer/guardian must run under a lease.
+        # No active lease — tester/guardian must run under a lease.
         error = (
             f"PROCESS ERROR: {role.capitalize()} completed without an active lease for "
             f"workflow {workflow_id}. Cannot route."
@@ -1386,160 +775,5 @@ def _safe_release(conn: sqlite3.Connection, lease_id: str) -> None:
     """Release a lease without raising. Fire-and-forget."""
     try:
         leases.release(conn, lease_id)
-    except Exception:
-        pass
-
-
-def _format_critic_context(result: dict) -> str:
-    """Render implementer critic routing metadata for hook output."""
-    if result.get("critic_disabled"):
-        return (
-            "\nCRITIC: disabled (critic_enabled_implementer_stop=false; "
-            "direct reviewer handoff intentionally allowed)."
-        )
-    if not result.get("critic_found"):
-        return ""
-
-    verdict = str(result.get("critic_verdict") or "")
-    provider = str(result.get("critic_provider") or "")
-    summary = str(result.get("critic_summary") or "")
-    detail = str(result.get("critic_detail") or "")
-    findings = result.get("critic_findings") or []
-    next_steps = result.get("critic_next_steps") or []
-    retry_limit = int(result.get("critic_retry_limit") or 0)
-    try_again_streak = int(result.get("critic_try_again_streak") or 0)
-    repeated_fp_streak = int(result.get("critic_repeated_fingerprint_streak") or 0)
-    escalated = bool(result.get("critic_escalated"))
-    escalation_reason = str(result.get("critic_escalation_reason") or "")
-
-    lines: list[str] = [
-        f"CRITIC: provider={provider or 'unknown'}, verdict={verdict}"
-    ]
-    digest_lines: list[str] = [
-        "USER_VISIBLE_CRITIC_DIGEST:",
-        f"Implementer critic: {verdict or 'unknown'} -> {result.get('next_role') or 'unknown'}",
-    ]
-    if verdict == "TRY_AGAIN":
-        if escalated:
-            lines.append(
-                f"CRITIC_RETRY: reviewer_adjudication after {escalation_reason}"
-            )
-            digest_lines.append(
-                f"Retry state: reviewer adjudication after {escalation_reason or 'retry escalation'}."
-            )
-        else:
-            lines.append(
-                f"CRITIC_RETRY: try_again={try_again_streak}, retry_limit={retry_limit}"
-            )
-            digest_lines.append(
-                f"Retry state: {try_again_streak} of {retry_limit} before reviewer escalation."
-            )
-        if repeated_fp_streak >= 2:
-            lines.append(
-                f"CRITIC_CONVERGENCE: repeated_fingerprint_streak={repeated_fp_streak}"
-            )
-            digest_lines.append(f"Convergence: repeated fingerprint streak {repeated_fp_streak}.")
-    if summary:
-        lines.append(f"CRITIC_SUMMARY: {summary}")
-        digest_lines.append(f"Summary: {summary}")
-    if detail:
-        lines.append(f"CRITIC_DETAIL: {detail}")
-    if findings:
-        lines.append("CRITIC_FINDINGS:")
-        digest_lines.append("Findings:")
-        for finding in findings[:8]:
-            lines.append(f"- {finding}")
-        for finding in findings[:4]:
-            digest_lines.append(f"- {finding}")
-    if next_steps:
-        lines.append("CRITIC_NEXT_STEPS:")
-        digest_lines.append("Next:")
-        for step in next_steps[:8]:
-            lines.append(f"- {step}")
-        for step in next_steps[:4]:
-            digest_lines.append(f"- {step}")
-    if verdict == "TRY_AGAIN":
-        lines.append(
-            "CRITIC_ACTION: Re-dispatch implementer with CRITIC_DETAIL and CRITIC_NEXT_STEPS verbatim."
-        )
-    elif verdict == "BLOCKED_BY_PLAN":
-        lines.append(
-            "CRITIC_ACTION: Re-dispatch planner with CRITIC_DETAIL and CRITIC_NEXT_STEPS verbatim."
-        )
-    return "\n" + "\n".join(lines + digest_lines) if lines else ""
-
-
-def _emit_shadow_stage_decision(
-    conn: sqlite3.Connection,
-    *,
-    live_role: str,
-    result: dict,
-    active_lease_id: str,
-    workflow_id: str,
-) -> None:
-    """Emit a ``shadow_stage_decision`` audit event for the current routing.
-
-    DEC-CLAUDEX-DISPATCH-SHADOW-001: this is the Phase 1 shadow observer.
-    It records what the target ClauDEX stage registry would have routed for
-    the same (live_role, verdict) pair so later parity analysis can classify
-    known divergences without affecting any live routing.
-
-    Best-effort contract:
-      * Never raises (caller is already wrapped in try/except).
-      * Never mutates ``result`` or any runtime state outside the events
-        table.
-      * Reads only the completion record that the live path already
-        consulted. Completion records persist after lease release, so this
-        is a safe pure read.
-
-    The event detail is JSON-encoded with a stable field set produced by
-    ``dispatch_shadow.compute_shadow_decision``.
-    """
-    # Look up the live verdict from the completion record. All routing roles
-    # now have structured completion records (planner added Phase 6 Slice 4).
-    live_verdict = ""
-    if live_role in ("planner", "implementer", "guardian", "reviewer") and active_lease_id:
-        try:
-            comp = completions.latest(conn, lease_id=active_lease_id)
-            if comp and comp.get("role") == live_role:
-                live_verdict = comp.get("verdict") or ""
-        except Exception:
-            pass  # Best-effort; absence just means no verdict to compare.
-
-    # All routing roles require a verdict for meaningful shadow comparison.
-    # Absence of a verdict means the live path did not finish routing
-    # (contract missing / invalid); skip emission.
-    if not live_verdict:
-        return
-
-    decision = dispatch_shadow.compute_shadow_decision(
-        live_role=live_role,
-        live_verdict=live_verdict,
-        live_next_role=result.get("next_role"),
-        guardian_mode=result.get("guardian_mode", "") or "",
-    )
-
-    # Augment with workflow identity so downstream analysis can scope by
-    # workflow without re-joining tables.
-    payload = dict(decision)
-    payload["workflow_id"] = workflow_id or ""
-
-    try:
-        detail = json.dumps(payload, sort_keys=True)
-    except (TypeError, ValueError):
-        return  # Unserialisable payload — drop silently.
-
-    source = f"workflow:{workflow_id}" if workflow_id else None
-    evt_id = events.emit(
-        conn,
-        type="shadow_stage_decision",
-        source=source,
-        detail=detail,
-    )
-    # Expose the event id in result["events"] for tests / diagnostics, but
-    # do NOT add it to any routing-affecting field. auto_dispatch and
-    # next_role are already finalised above.
-    try:
-        result["events"].append({"type": "shadow_stage_decision", "id": evt_id})
     except Exception:
         pass

@@ -97,18 +97,13 @@ tables = {r[0] for r in conn.execute(\"SELECT name FROM sqlite_master WHERE type
 print(','.join(sorted(tables)))
 " 2>/dev/null || echo "ERROR")
 # sqlite_sequence is auto-created by SQLite for AUTOINCREMENT columns.
-# Expected list updated to match current schema (WS1+WS2+WS3+WS4+WS5+W-OBS-1+Phase1+Phase2+Phase2b additions):
-#   approvals, bugs, issue_captures, completion_records, critic_reviews — lease/completion/review/bug/backlog tracking
-#   dispatch_attempts, dispatch_leases — canonical dispatch state and lease stores
+# Expected list updated to match current schema (WS1+WS2+WS3+WS4+WS5+W-OBS-1 additions):
+#   approvals, bugs, completion_records — lease/completion/bug tracking (WS1/WS2/WS3)
+#   dispatch_leases — mandatory lease store (WS3/A3)
 #   evaluation_state — evaluator authority (TKT-024)
 #   workflow_bindings, workflow_scope — workflow scoping (TKT-022)
 #   obs_metrics, obs_runs, obs_suggestions — observatory tables (W-OBS-1)
-#   decisions, work_items — Phase 1 decision/work registry (DEC-CLAUDEX-DW-REGISTRY-001)
-#   enforcement_config — policy engine config authority (DEC-CONFIG-AUTHORITY-001)
-#   goal_contracts — Phase 2 goal-contract persistence (DEC-CLAUDEX-GOAL-CONTRACTS-001)
-#   pending_agent_requests — Phase 2 SubagentStart contract carrier (DEC-CLAUDEX-SA-CARRIER-001)
-#   agent_sessions, seats, supervision_threads, dispatch_attempts — Phase 2b supervision fabric (DEC-CLAUDEX-SUPERVISION-DOMAIN-001)
-EXPECTED="agent_markers,agent_sessions,approvals,bash_source_baselines,bootstrap_requests,bugs,completion_records,critic_reviews,critic_runs,decisions,dispatch_attempts,dispatch_leases,dispatch_next_actions,enforcement_config,enforcement_gaps,evaluation_state,events,goal_contracts,issue_captures,lint_circuit_breakers,lint_profile_cache,obs_metrics,obs_runs,obs_suggestions,pending_agent_requests,policy_strikes,preserved_contexts,reviewer_findings,scratchlane_permits,scratchlane_requests,seats,session_activity,session_file_changes,session_tokens,sqlite_sequence,supervision_threads,test_state,todo_state,trace_manifest,traces,work_item_grants,work_items,workflow_bindings,workflow_scope,worktrees"
+EXPECTED="agent_markers,approvals,bugs,completion_records,dispatch_cycles,dispatch_leases,dispatch_queue,evaluation_state,events,obs_metrics,obs_runs,obs_suggestions,proof_state,session_tokens,sqlite_sequence,test_state,todo_state,trace_manifest,traces,workflow_bindings,workflow_scope,worktrees"
 if [[ "$TABLES" == "$EXPECTED" ]]; then
     echo "  PASS: all tables present"
     PASS=$((PASS + 1))
@@ -132,31 +127,29 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Evaluation
+# Proof
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Evaluation ---"
+echo "--- Proof ---"
 
-OUT=$(cc evaluation get wf-missing)
-assert_field "evaluation get missing returns found=False" "$OUT" "found" "False"
-assert_field "evaluation get missing returns idle" "$OUT" "status" "idle"
+OUT=$(cc proof get wf-missing)
+assert_field "proof get missing returns found=False" "$OUT" "found" "False"
 
-OUT=$(cc evaluation set wf-1 pending)
-assert_field "evaluation set returns workflow_id" "$OUT" "workflow_id" "wf-1"
+OUT=$(cc proof set wf-1 pending)
+assert_field "proof set returns workflow_id" "$OUT" "workflow_id" "wf-1"
 
-OUT=$(cc evaluation get wf-1)
-assert_field "evaluation get returns correct status" "$OUT" "status" "pending"
-assert_field "evaluation get returns found=True" "$OUT" "found" "True"
+OUT=$(cc proof get wf-1)
+assert_field "proof get returns correct status" "$OUT" "status" "pending"
+assert_field "proof get returns found=True" "$OUT" "found" "True"
 
-OUT=$(cc evaluation set wf-1 ready_for_guardian --head-sha abc123)
-OUT=$(cc evaluation get wf-1)
-assert_field "evaluation set upserts status" "$OUT" "status" "ready_for_guardian"
-assert_field "evaluation set persists head_sha" "$OUT" "head_sha" "abc123"
+OUT=$(cc proof set wf-1 verified)
+OUT=$(cc proof get wf-1)
+assert_field "proof set upserts status" "$OUT" "status" "verified"
 
-cc evaluation set wf-2 idle > /dev/null
-cc evaluation set wf-3 pending > /dev/null
-OUT=$(cc evaluation list)
-assert_field "evaluation list count" "$OUT" "count" "3"
+cc proof set wf-2 idle > /dev/null
+cc proof set wf-3 pending > /dev/null
+OUT=$(cc proof list)
+assert_field "proof list count" "$OUT" "count" "3"
 
 # ---------------------------------------------------------------------------
 # Marker
@@ -225,18 +218,29 @@ assert_field "worktree list count after remove" "$OUT" "count" "0"
 echo ""
 echo "--- Dispatch ---"
 
-OUT=$(cc dispatch attempt-issue \
-    --session-id sess-001 \
-    --agent-type implementer \
-    --instruction "test dispatch" \
-    --workflow-id wf-dispatch-001)
-assert_json_parseable "dispatch attempt-issue returns JSON" "$OUT"
-assert_field "dispatch attempt-issue status" "$OUT" "status" "pending"
-assert_field "dispatch attempt-issue workflow" "$OUT" "workflow_id" "wf-dispatch-001"
+OUT=$(cc dispatch cycle-start INIT-002)
+assert_json_parseable "dispatch cycle-start returns JSON" "$OUT"
+assert_ok "dispatch cycle-start status" "$OUT"
 
-OUT=$(cc dispatch attempt-claim --session-id sess-001 --agent-type implementer)
-assert_ok "dispatch attempt-claim status" "$OUT"
-assert_field "dispatch attempt-claim found=True" "$OUT" "found" "True"
+OUT=$(cc dispatch cycle-current)
+assert_field "dispatch cycle-current returns found=True" "$OUT" "found" "True"
+assert_field "dispatch cycle-current initiative" "$OUT" "initiative" "INIT-002"
+
+OUT=$(cc dispatch enqueue implementer --ticket TKT-006)
+QID=$(echo "$OUT" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" 2>/dev/null)
+assert_field "dispatch enqueue role" "$OUT" "role" "implementer"
+
+OUT=$(cc dispatch next)
+assert_field "dispatch next returns found=True" "$OUT" "found" "True"
+
+OUT=$(cc dispatch start "$QID")
+assert_ok "dispatch start" "$OUT"
+
+OUT=$(cc dispatch next)
+assert_field "dispatch next empty after start" "$OUT" "found" "False"
+
+OUT=$(cc dispatch complete "$QID")
+assert_ok "dispatch complete" "$OUT"
 
 # ---------------------------------------------------------------------------
 # Statusline
@@ -317,14 +321,14 @@ assert_field "todos get missing global=0" "$OUT" "global" "0"
 echo ""
 echo "--- Latency ---"
 
-cc evaluation set wf-lat idle > /dev/null
+cc proof set wf-lat idle > /dev/null
 START_NS=$(python3 -c "import time; print(int(time.perf_counter()*1000000))")
-cc evaluation get wf-lat > /dev/null
+cc proof get wf-lat > /dev/null
 END_NS=$(python3 -c "import time; print(int(time.perf_counter()*1000000))")
 
 # Use shell arithmetic for ms measurement via date
-START_MS=$(python3 -c "import time; t=time.perf_counter(); __import__('subprocess').run(['python3', '$CLI', 'evaluation', 'get', 'wf-lat'], capture_output=True, env={**__import__('os').environ, 'CLAUDE_POLICY_DB': '$TEST_DB', 'PYTHONPATH': '$PROJECT_ROOT'}); print(f'{(time.perf_counter()-t)*1000:.1f}')" 2>/dev/null || echo "0")
-echo "  evaluation get latency: ${START_MS}ms"
+START_MS=$(python3 -c "import time; t=time.perf_counter(); __import__('subprocess').run(['python3', '$CLI', 'proof', 'get', 'wf-lat'], capture_output=True, env={**__import__('os').environ, 'CLAUDE_POLICY_DB': '$TEST_DB', 'PYTHONPATH': '$PROJECT_ROOT'}); print(f'{(time.perf_counter()-t)*1000:.1f}')" 2>/dev/null || echo "0")
+echo "  proof get latency: ${START_MS}ms"
 LATENCY_OK=$(python3 -c "print('yes' if float('${START_MS}') < 200 else 'no')" 2>/dev/null || echo "no")
 if [[ "$LATENCY_OK" == "yes" ]]; then
     echo "  PASS: latency ${START_MS}ms < 200ms"

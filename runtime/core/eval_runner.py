@@ -31,13 +31,12 @@ Rationale: Keeps eval execution concerns (YAML load, fixture setup, policy
 Title: run_deterministic() reads actor_role from scenario setup section
 Status: accepted
 Rationale: Gate scenarios test policy enforcement for multiple roles. The
-  write-who-deny scenario verifies the deny path (actor_role="reviewer"); the
+  write-who-deny scenario verifies the deny path (actor_role="tester"); the
   impl-source-allow scenario verifies the allow path (actor_role="implementer").
   Rather than seeding state.db with a live marker (which would require full
   schema bootstrap in the fixture), we build a PolicyContext directly with the
-  actor_role specified in scenario.setup.actor_role (defaulting to "reviewer"
-  when absent, preserving the pre-Phase-8 behaviour of testing the deny path
-  for a non-implementer role). This is valid because build_context()
+  actor_role specified in scenario.setup.actor_role (defaulting to "tester" when
+  absent, preserving backward compatibility). This is valid because build_context()
   is the production path for resolving actor_role from DB state, but policy
   functions receive a PolicyContext — they do not re-query the DB. Injecting
   actor_role directly tests the policy function's logic without needing a live DB.
@@ -60,7 +59,7 @@ Status: accepted
 Rationale: The scoring pipeline (eval_scorer) was previously unused — the
   scoring, expected_evidence, and expected_defects fields in scenario YAML were
   dead data. For deterministic scenarios the raw_output is a policy decision
-  string (not evaluator agent output), so the full score_scenario() pipeline
+  string (not tester agent output), so the full score_scenario() pipeline
   (which parses EVAL_VERDICT trailers and coverage tables from agent prose) does
   not apply. Instead run_scenario() calls score_verdict() directly and passes
   the structured scores into record_score(). Live scenarios will use the full
@@ -70,7 +69,6 @@ Rationale: The scoring pipeline (eval_scorer) was previously unused — the
 from __future__ import annotations
 
 import os
-import json
 import shutil
 import sqlite3
 import subprocess
@@ -83,10 +81,6 @@ import yaml
 
 import runtime.core.eval_metrics as eval_metrics
 import runtime.core.eval_scorer as eval_scorer
-from runtime.core import leases as leases_mod
-from runtime.core import work_admission as work_admission_mod
-from runtime.core import workflows as workflows_mod
-from runtime.core.db import connect_memory
 from runtime.core.policy_engine import (
     PolicyContext,
     PolicyDecision,
@@ -94,7 +88,6 @@ from runtime.core.policy_engine import (
     default_registry,
 )
 from runtime.eval_schemas import EVAL_CATEGORIES, EVAL_MODES
-from runtime.schemas import ensure_schema
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -204,8 +197,6 @@ def setup_fixture(
     fixture_name: str,
     fixtures_dir: Path,
     project_tmp: Path,
-    *,
-    git_enabled: bool = True,
 ) -> Path:
     """Copy a fixture to a temp directory and initialize a git repo.
 
@@ -236,9 +227,6 @@ def setup_fixture(
 
     # Copy all fixture files
     shutil.copytree(str(fixture_src), str(dest), dirs_exist_ok=True)
-
-    if not git_enabled:
-        return dest
 
     # Initialize git repo
     _run_git(dest, ["init", "-b", "main"])
@@ -290,7 +278,7 @@ def run_deterministic(
     """Execute a deterministic scenario via the policy engine.
 
     Builds a synthetic PolicyContext with actor_role read from the scenario's
-    setup section (scenario.setup.actor_role), defaulting to "reviewer" if not
+    setup section (scenario.setup.actor_role), defaulting to "tester" if not
     specified. Constructs a PolicyRequest for a Write tool use on a source
     file inside the fixture, then calls the default policy registry.
 
@@ -312,10 +300,6 @@ def run_deterministic(
     start_ms = int(time.monotonic() * 1000)
 
     try:
-        setup: dict = scenario.get("setup") or {}
-        if setup.get("eval_target") == "admission":
-            return run_admission_deterministic(scenario, fixture_path, repo_root)
-
         registry = default_registry()
 
         # Determine the target file path for the synthetic Write payload.
@@ -331,14 +315,11 @@ def run_deterministic(
             src_rel = "src/hello.py"
         target_file = str(fixture_path / src_rel)
 
-        # Read actor_role from scenario setup section; default to "reviewer" so
-        # all existing deny-path scenarios without an explicit setup section
-        # continue to exercise the non-implementer deny branch after the
-        # Phase 8 Slice 11 tester retirement.
+        # Read actor_role from scenario setup section; default to "tester" so
+        # all existing scenarios without a setup section are unchanged (deny path).
         # DEC-EVAL-RUNNER-002: injecting actor_role directly, not via DB.
-        actor_role: str = setup.get("actor_role", "reviewer")
-
-        from runtime.core.authority_registry import capabilities_for as _capabilities_for
+        setup: dict = scenario.get("setup") or {}
+        actor_role: str = setup.get("actor_role", "tester")
 
         context = PolicyContext(
             actor_role=actor_role,
@@ -354,7 +335,6 @@ def run_deterministic(
             test_state=None,
             binding=None,
             dispatch_phase=None,
-            capabilities=_capabilities_for(actor_role),
         )
 
         # event_type must be "Write" (not "PreToolUse") because write_who and
@@ -366,9 +346,8 @@ def run_deterministic(
         # Content must be >= 20 lines to avoid the write_plan_exists fast-mode
         # bypass (< 20 lines → "feedback" before the plan check runs). Using a
         # realistic-length file ensures all write-path policies evaluate normally
-        # for both the deny (write_who catches the non-implementer role before
-        # the plan check) and the allow (write_who passes implementer, plan
-        # check runs to completion) paths.
+        # for both the deny (write_who catches tester before plan check) and the
+        # allow (write_who passes implementer, plan check runs to completion) paths.
         _synthetic_content = "# synthetic eval write — deterministic gate scenario\n" + (
             "# padding line\n" * 24
         )
@@ -402,83 +381,6 @@ def run_deterministic(
             "duration_ms": duration_ms,
             "error": str(exc),
         }
-
-
-def _admission_payload(scenario: dict, fixture_path: Path) -> dict:
-    input_block = scenario.get("input") or {}
-    raw_payload = input_block.get("payload") or {}
-    payload = dict(raw_payload) if isinstance(raw_payload, dict) else {}
-    payload.setdefault("project_root", str(fixture_path))
-    payload.setdefault("cwd", str(fixture_path))
-    target = str(payload.get("target_path") or "")
-    if target and not os.path.isabs(target):
-        payload["target_path"] = str(fixture_path / target)
-    return payload
-
-
-def _seed_admission_runtime(conn: sqlite3.Connection, scenario: dict, fixture_path: Path) -> None:
-    setup = scenario.get("setup") or {}
-    workflow_id = str(setup.get("workflow_id") or "wf-admission")
-    branch = str(setup.get("branch") or "feature/admission")
-    if setup.get("bind_workflow"):
-        workflows_mod.bind_workflow(
-            conn,
-            workflow_id=workflow_id,
-            worktree_path=str(fixture_path),
-            branch=branch,
-        )
-    if setup.get("set_scope"):
-        workflows_mod.set_scope(
-            conn,
-            workflow_id,
-            allowed_paths=list(setup.get("allowed_paths") or ["src/**"]),
-            required_paths=list(setup.get("required_paths") or []),
-            forbidden_paths=list(setup.get("forbidden_paths") or []),
-            authority_domains=list(setup.get("authority_domains") or []),
-        )
-    if setup.get("issue_implementer_lease"):
-        leases_mod.issue(
-            conn,
-            role="implementer",
-            worktree_path=str(fixture_path),
-            workflow_id=workflow_id,
-            branch=branch,
-        )
-
-
-def run_admission_deterministic(
-    scenario: dict,
-    fixture_path: Path,
-    repo_root: Path,
-) -> dict:
-    """Execute a deterministic Guardian Admission classifier scenario."""
-    del repo_root
-    start_ms = int(time.monotonic() * 1000)
-    conn = connect_memory()
-    try:
-        ensure_schema(conn)
-        _seed_admission_runtime(conn, scenario, fixture_path)
-        result = work_admission_mod.classify_payload(
-            conn,
-            _admission_payload(scenario, fixture_path),
-        )
-        duration_ms = int(time.monotonic() * 1000) - start_ms
-        return {
-            "verdict": str(result.get("verdict") or "error"),
-            "raw_output": json.dumps(result, sort_keys=True),
-            "duration_ms": duration_ms,
-            "error": None,
-        }
-    except Exception as exc:
-        duration_ms = int(time.monotonic() * 1000) - start_ms
-        return {
-            "verdict": "error",
-            "raw_output": "",
-            "duration_ms": duration_ms,
-            "error": str(exc),
-        }
-    finally:
-        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -568,13 +470,7 @@ def run_scenario(
 
     try:
         # Setup
-        setup = scenario.get("setup") or {}
-        fixture_path = setup_fixture(
-            fixture_name,
-            fixtures_dir,
-            project_tmp,
-            git_enabled=bool(setup.get("git", True)),
-        )
+        fixture_path = setup_fixture(fixture_name, fixtures_dir, project_tmp)
 
         # Execute
         if mode == "deterministic":
@@ -589,7 +485,7 @@ def run_scenario(
 
         # Score — DEC-EVAL-RUNNER-004:
         # For deterministic mode the raw_output is a policy decision string,
-        # not evaluator agent prose, so the full score_scenario() (which parses
+        # not tester agent prose, so the full score_scenario() (which parses
         # EVAL_VERDICT trailers and coverage tables) does not apply. Use
         # score_verdict() directly and leave the live-specific scores as None.
         v_score = eval_scorer.score_verdict(verdict_actual, verdict_expected)

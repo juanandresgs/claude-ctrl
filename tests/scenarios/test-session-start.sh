@@ -7,7 +7,6 @@ TEST_NAME="test-session-start"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HOOK="$REPO_ROOT/hooks/session-init.sh"
 TMP_DIR="$REPO_ROOT/tmp/$TEST_NAME-$$"
-ENV_FILE="$TMP_DIR/claude-env"
 
 cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
@@ -22,22 +21,17 @@ PAYLOAD='{"event":"SessionStart","session_id":"test-123"}'
 
 # Run the hook with the temp dir as CLAUDE_PROJECT_DIR
 # Mask gh so todo.sh hud doesn't hang querying GitHub in test context
-output=$(printf '%s' "$PAYLOAD" | PATH="/usr/bin:/bin" CLAUDE_PROJECT_DIR="$TMP_DIR" CLAUDE_ENV_FILE="$ENV_FILE" "$HOOK" 2>/dev/null) || {
+output=$(printf '%s' "$PAYLOAD" | PATH="/usr/bin:/bin" CLAUDE_PROJECT_DIR="$TMP_DIR" "$HOOK" 2>/dev/null) || {
     echo "FAIL: $TEST_NAME — hook exited nonzero"
     exit 1
 }
 
-if ! grep -Fx 'export PATH="/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin:$PATH"' "$ENV_FILE" >/dev/null 2>&1; then
-    echo "FAIL: $TEST_NAME — session env file did not receive deterministic PATH export"
-    exit 1
-fi
-
-# session-init.sh may produce empty output (no context parts) or JSON with additionalContext.
-# Either is valid — the hook exits 0 in both cases.
-# Verify: if output is non-empty it must be valid JSON
+# session-init.sh may produce empty output (no context parts) or one JSON object
+# with additionalContext. Multiple top-level JSON documents are invalid for
+# Claude hooks even though bare `jq .` accepts them as a stream.
 if [[ -n "$output" ]]; then
-    if ! echo "$output" | jq '.' >/dev/null 2>&1; then
-        echo "FAIL: $TEST_NAME — non-empty output is not valid JSON"
+    if ! echo "$output" | jq -s -e 'length == 1 and .[0].hookSpecificOutput.hookEventName == "SessionStart"' >/dev/null 2>&1; then
+        echo "FAIL: $TEST_NAME — non-empty output must be exactly one SessionStart JSON object"
         echo "  output: $output"
         exit 1
     fi

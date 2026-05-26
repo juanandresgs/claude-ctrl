@@ -3,13 +3,13 @@
 # consistent: what is written through one path is readable through another.
 #
 # Four round-trip sequences tested:
-#   1. Write evaluation state via runtime-bridge.sh rt_eval_set
-#      -> read via cc-policy evaluation get -> same value
+#   1. Write proof via context-lib.sh write_proof_status
+#      -> read via cc-policy proof get -> same value
 #   2. Write marker via cc-policy marker set
 #      -> read via cc-policy marker get-active -> same role
 #   3. Emit event via cc-policy event emit
 #      -> query via cc-policy event query -> event present
-#   4. Populate runtime state (evaluation + marker + worktree + dispatch + events)
+#   4. Populate runtime state (proof + marker + worktree + dispatch + events)
 #      -> cc-policy statusline snapshot reflects all of the above
 #
 # Each test uses an isolated DB (CLAUDE_POLICY_DB) so the real state.db is
@@ -47,7 +47,7 @@ mkdir -p "$TMP_DIR"
 
 # cc-policy helper scoped to the test DB
 policy() {
-    CLAUDE_PROJECT_DIR="$TMP_DIR" CLAUDE_POLICY_DB="$DB" PYTHONPATH="$REPO_ROOT" python3 "$CLI" "$@"
+    CLAUDE_POLICY_DB="$DB" PYTHONPATH="$REPO_ROOT" python3 "$CLI" "$@"
 }
 
 assert_eq() {
@@ -73,26 +73,28 @@ assert_jq_true() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 1: evaluation round-trip through runtime-bridge.sh
-#   rt_eval_set (bridge) -> cc-policy evaluation get -> same status string
+# Test 1: proof round-trip through runtime-bridge.sh
+#   write_proof_status (context-lib.sh) -> rt_proof_set (bridge) -> cc-policy
+#   proof get -> same status string
 # ---------------------------------------------------------------------------
-printf '\n-- 1: evaluation round-trip (bridge write -> CLI read)\n'
+printf '\n-- 1: proof round-trip (bridge write -> CLI read)\n'
 
+# Source the bridge and write proof through it
 WORKFLOW="wf-consistency-test"
 (
     CLAUDE_POLICY_DB="$DB"
     export CLAUDE_POLICY_DB
     # shellcheck source=/dev/null
     source "$BRIDGE"
-    rt_eval_set "$WORKFLOW" "ready_for_guardian" "abc123"
+    rt_proof_set "$WORKFLOW" "verified"
 )
 
-result=$(policy evaluation get "$WORKFLOW")
+result=$(policy proof get "$WORKFLOW")
 status=$(printf '%s' "$result" | jq -r '.status // empty')
-assert_eq "evaluation round-trip: status is ready_for_guardian" "ready_for_guardian" "$status"
+assert_eq "proof round-trip: status is verified" "verified" "$status"
 
 found=$(printf '%s' "$result" | jq -r '.found // false')
-assert_eq "evaluation round-trip: found is true" "true" "$found"
+assert_eq "proof round-trip: found is true" "true" "$found"
 
 # ---------------------------------------------------------------------------
 # Test 2: marker round-trip
@@ -100,14 +102,12 @@ assert_eq "evaluation round-trip: found is true" "true" "$found"
 # ---------------------------------------------------------------------------
 printf '\n-- 2: marker round-trip (CLI write -> CLI read)\n'
 
-# Phase 8 Slice 11 retired the legacy ``tester`` role; the marker round-trip
-# is exercised against ``reviewer`` (the live read-only evaluator).
-policy marker set "agent-rt-001" "reviewer" --project-root "$TMP_DIR" >/dev/null
-result=$(policy marker get-active --project-root "$TMP_DIR")
+policy marker set "agent-rt-001" "tester" >/dev/null
+result=$(policy marker get-active)
 
 role=$(printf '%s' "$result" | jq -r '.role // empty')
 agent_id=$(printf '%s' "$result" | jq -r '.agent_id // empty')
-assert_eq "marker round-trip: role is reviewer"         "reviewer"     "$role"
+assert_eq "marker round-trip: role is tester"           "tester"       "$role"
 assert_eq "marker round-trip: agent_id matches"         "agent-rt-001" "$agent_id"
 assert_eq "marker round-trip: found is true"            "true" \
     "$(printf '%s' "$result" | jq -r '.found // false')"
@@ -135,33 +135,28 @@ assert_eq "event round-trip: type preserved" "acceptance.probe" "$ev_type"
 # ---------------------------------------------------------------------------
 printf '\n-- 4: statusline snapshot reflects populated runtime state\n'
 
-# Add a worktree and reviewer completion so snapshot has non-default values
+# Add a worktree and a dispatch cycle so snapshot has non-default values
 policy worktree register "/tmp/rt-wt-a" "feature/rt-a" --ticket "TKT-014" >/dev/null
+cycle_json=$(policy dispatch cycle-start "INIT-RT-TEST")
 
 # DEC-WS6-001: dispatch_status is derived from the latest completion record via
-# determine_next_role(role, verdict), not from dispatch_queue. Issue a reviewer
+# determine_next_role(role, verdict), not from dispatch_queue. Issue a tester
 # lease and submit a completion with verdict=ready_for_guardian so the snapshot
-# returns dispatch_status=guardian. (Phase 8 Slice 11 retired ``tester``; the
-# reviewer is the live read-only evaluator after Slice 11.)
+# returns dispatch_status=guardian.
 RT_WORKFLOW="wf-rt-dispatch-test"
 policy workflow bind "$RT_WORKFLOW" "$TMP_DIR" "feature/rt-test" >/dev/null 2>&1 || true
 policy workflow scope-set "$RT_WORKFLOW" --allowed '["*"]' --forbidden '[]' >/dev/null 2>&1 || true
-REVIEWER_LEASE_OUT=$(policy lease issue-for-dispatch "reviewer" \
+TESTER_LEASE_OUT=$(policy lease issue-for-dispatch "tester" \
     --worktree-path "$TMP_DIR" \
     --workflow-id "$RT_WORKFLOW" \
     --allowed-ops '["routine_local"]' 2>/dev/null || echo '{}')
-REVIEWER_LEASE_ID=$(printf '%s' "$REVIEWER_LEASE_OUT" | jq -r '.lease.lease_id // empty' 2>/dev/null || true)
-if [[ -n "$REVIEWER_LEASE_ID" ]]; then
-    COMP_PAYLOAD=$(jq -nc \
-        '{
-            REVIEW_VERDICT: "ready_for_guardian",
-            REVIEW_HEAD_SHA: "abc123",
-            REVIEW_FINDINGS_JSON: ({findings: [{severity: "note", title: "ok", detail: "ok"}]} | tojson)
-        }')
+TESTER_LEASE_ID=$(printf '%s' "$TESTER_LEASE_OUT" | jq -r '.lease.lease_id // empty' 2>/dev/null || true)
+if [[ -n "$TESTER_LEASE_ID" ]]; then
+    COMP_PAYLOAD='{"EVAL_VERDICT":"ready_for_guardian","EVAL_TESTS_PASS":"true","EVAL_NEXT_ROLE":"guardian","EVAL_HEAD_SHA":"abc123"}'
     policy completion submit \
-        --lease-id "$REVIEWER_LEASE_ID" \
+        --lease-id "$TESTER_LEASE_ID" \
         --workflow-id "$RT_WORKFLOW" \
-        --role "reviewer" \
+        --role "tester" \
         --payload "$COMP_PAYLOAD" >/dev/null 2>&1 || true
 fi
 
@@ -169,10 +164,12 @@ snap=$(policy statusline snapshot)
 
 assert_eq "snapshot: status ok"           "ok"       "$(printf '%s' "$snap" | jq -r '.status')"
 # W-CONV-4: proof_status/proof_workflow removed from snapshot
-assert_eq "snapshot: active_agent reviewer" "reviewer" "$(printf '%s' "$snap" | jq -r '.active_agent')"
+assert_eq "snapshot: active_agent tester" "tester"   "$(printf '%s' "$snap" | jq -r '.active_agent')"
 assert_jq_true "snapshot: worktree_count >= 1" "$snap" "(.worktree_count >= 1)"
 assert_eq "snapshot: dispatch_status guardian" "guardian" \
     "$(printf '%s' "$snap" | jq -r '.dispatch_status')"
+assert_eq "snapshot: dispatch_initiative" "INIT-RT-TEST" \
+    "$(printf '%s' "$snap" | jq -r '.dispatch_initiative')"
 assert_jq_true "snapshot: recent_event_count >= 1" "$snap" "(.recent_event_count >= 1)"
 assert_jq_true "snapshot: snapshot_at is positive epoch" "$snap" "(.snapshot_at > 0)"
 

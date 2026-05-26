@@ -1,14 +1,15 @@
-"""Policy: bash_eval_readiness — gate commit/merge on evaluation_state.
+"""Policy: bash_eval_readiness — gate commit/merge on v6 landing readiness.
 
-Port of guard.sh lines 285-366 (Check 10).
+Port of guard.sh lines 285-366 (Check 10), upgraded for v6.
 
-@decision DEC-PE-W3-009
-Title: bash_eval_readiness uses context.eval_state as the sole readiness authority
+@decision DEC-V6-LANDING-001
+Title: v6_landing_readiness is the sole Guardian landing readiness authority
 Status: accepted
-Rationale: guard.sh Check 10 reads evaluation_state from SQLite via
-  read_evaluation_status/read_evaluation_state. build_context() has already
-  loaded eval_state (for the resolved workflow_id) into PolicyContext. This
-  policy consumes that pre-loaded state — pure function, no I/O.
+Rationale: evaluation_state, test_state, scope, leases, and reviewer results are
+  evidence sources, not separate landing authorities. v6 collapses them into one
+  v6_landing_readiness row keyed by guardian:land stage_run_id. This policy
+  consumes that pre-loaded aggregate from PolicyContext and denies commit/merge
+  unless it is ready and HEAD-aligned.
 
   Workflow ID resolution order (mirrors guard.sh Check 10 exactly):
     1. Lease workflow_id (when a lease is active) — authoritative identity.
@@ -22,22 +23,19 @@ Rationale: guard.sh Check 10 reads evaluation_state from SQLite via
   governed recovery operations with no "feature" to evaluate.
 
   The SHA comparison for merge operations uses the merge_ref tip (the branch
-  being merged), not main's HEAD. The reviewer cleared the feature branch,
+  being merged), not main's HEAD. The evaluator cleared the feature branch,
   not main.
 """
 
 from __future__ import annotations
 
+import json
 import subprocess
 from typing import Optional
 
-from runtime.core.landing_authority import (
-    is_branch_checkpoint_commit,
-    is_guardian_land_shared_base_target,
-    paths_are_governance_only,
-)
 from runtime.core.leases import GitInvocation
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
+from runtime.core.policies.fast_path import guarded_non_source_commit
 from runtime.core.policy_utils import (
     current_workflow_id,
     extract_merge_ref,
@@ -61,25 +59,16 @@ def _git_rev_parse(target_dir: str, ref: str) -> str:
 
 
 def _sha_prefix_match(sha_a: str, sha_b: str) -> bool:
-    """True if one SHA is a prefix of the other (short vs full SHA comparison)."""
+    """Strict SHA comparison: full match, or >=12-char unambiguous prefix."""
+    sha_a = str(sha_a or "")
+    sha_b = str(sha_b or "")
     if not sha_a or not sha_b:
         return False
-    return sha_b.startswith(sha_a) or sha_a.startswith(sha_b)
-
-
-def _git_staged_files(target_dir: str) -> list[str]:
-    try:
-        r = subprocess.run(
-            ["git", "-C", target_dir, "diff", "--cached", "--name-only"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if r.returncode == 0:
-            return [f for f in r.stdout.strip().splitlines() if f]
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        pass
-    return []
+    if len(sha_a) == 40 and len(sha_b) == 40:
+        return sha_a.lower() == sha_b.lower()
+    if min(len(sha_a), len(sha_b)) < 12:
+        return False
+    return sha_b.lower().startswith(sha_a.lower()) or sha_a.lower().startswith(sha_b.lower())
 
 
 def _resolve_workflow_id(
@@ -110,23 +99,19 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     if intent is None:
         return None
 
-    landing_invocations = [
-        op.invocation
-        for op in intent.git_operations
-        if op.invocation.subcommand in ("commit", "merge")
-    ]
-    if not landing_invocations:
+    invocation = intent.git_invocation
+    if invocation is None or invocation.subcommand not in ("commit", "merge"):
         return None
 
     # Admin recovery exemption.
-    if all(
-        invocation.subcommand == "merge" and "--abort" in invocation.args
-        for invocation in landing_invocations
-    ):
+    if invocation.subcommand == "merge" and "--abort" in invocation.args:
         return None
 
     # Meta-repo bypass.
     if request.context.is_meta_repo:
+        return None
+
+    if guarded_non_source_commit(request).eligible:
         return None
 
     # Determine target dir.
@@ -139,50 +124,34 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     # semantics and project_root/cwd for the directory.
     target_dir = request.context.project_root or intent.target_cwd or request.cwd or ""
 
-    for invocation in landing_invocations:
-        decision = _check_invocation_readiness(request, invocation, target_dir)
-        if decision is not None:
-            return decision
-    return None
-
-
-def _check_invocation_readiness(
-    request: PolicyRequest, invocation: GitInvocation, target_dir: str
-) -> Optional[PolicyDecision]:
-    if invocation.subcommand == "commit" and is_branch_checkpoint_commit(
-        request.context, target_dir
-    ):
-        return None
-
     workflow_id = _resolve_workflow_id(request, invocation, target_dir)
 
-    # Check evaluation state — use context (already loaded for resolved workflow_id).
-    eval_state = request.context.eval_state
-    eval_status = eval_state.get("status", "unknown") if eval_state else "not_found"
-
-    if eval_status != "ready_for_guardian":
+    readiness = getattr(request.context, "landing_readiness", None)
+    readiness_status = readiness.get("status", "not_found") if readiness else "not_found"
+    if readiness_status != "ready":
+        missing = []
+        if readiness:
+            raw_missing = readiness.get("missing") or readiness.get("missing_json") or []
+            if isinstance(raw_missing, str):
+                try:
+                    parsed = json.loads(raw_missing)
+                    missing = parsed if isinstance(parsed, list) else []
+                except (TypeError, json.JSONDecodeError):
+                    missing = [raw_missing] if raw_missing else []
+            elif isinstance(raw_missing, list):
+                missing = raw_missing
+        missing_text = f" missing={missing}." if missing else ""
         return PolicyDecision(
             action="deny",
             reason=(
-                f"Cannot proceed: evaluation_state for workflow '{workflow_id}' "
-                f"is '{eval_status}'. The reviewer must emit "
-                "REVIEW_VERDICT=ready_for_guardian before local landing can proceed."
+                f"Cannot proceed: v6_landing_readiness for workflow '{workflow_id}' "
+                f"is '{readiness_status}'.{missing_text} Run reviewer -> guardian:land readiness aggregation first."
             ),
             policy_name="bash_eval_readiness",
         )
 
-    if (
-        invocation.subcommand == "commit"
-        and is_guardian_land_shared_base_target(request.context, target_dir)
-        and paths_are_governance_only(_git_staged_files(target_dir))
-    ):
-        # The reviewer head_sha belongs to the feature branch. A governance-only
-        # base-worktree sidecar commit is planner-authored landing record, so it
-        # must require ready status but must not compare against feature head.
-        return None
-
-    # SHA comparison: stored head_sha vs. relevant HEAD.
-    stored_sha = eval_state.get("head_sha", "") if eval_state else ""
+    # SHA comparison: readiness head_sha vs. relevant HEAD.
+    stored_sha = readiness.get("head_sha", "") if readiness else ""
 
     is_merge = invocation.subcommand == "merge"
     merge_ref = extract_merge_ref(" ".join(invocation.argv)) if is_merge else None
@@ -199,12 +168,13 @@ def _check_invocation_readiness(
             return PolicyDecision(
                 action="deny",
                 reason=(
-                    f"Cannot proceed: evaluation_state head_sha '{stored_sha}' "
+                    f"Cannot proceed: v6_landing_readiness head_sha '{stored_sha}' "
                     f"does not match {sha_label} '{compare_head}'. "
                     "Source changes after reviewer clearance require a new reviewer pass."
                 ),
                 policy_name="bash_eval_readiness",
             )
+
     return None
 
 
