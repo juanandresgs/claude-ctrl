@@ -538,7 +538,7 @@ def reconcile_orphaned_launches(
     """
 
     now = _now()
-    clauses = ["status IN ('launched', 'running')", "updated_at < ?"]
+    clauses = ["status IN ('launched', 'running')", "updated_at <= ?"]
     params: list[object] = [now - int(stale_after)]
     if workflow_id:
         clauses.append("workflow_id = ?")
@@ -1096,9 +1096,9 @@ def resume_workflow_id(
             continue
         if run["status"] == "failed" and not latest_invalid_result_for_stage(conn, run["id"]):
             continue
-        score = 0
-        if run["status"] in {"pending", "blocked", "failed"}:
-            score += 100
+        score = 100
+        if run["status"] in {"launched", "running"}:
+            score -= 5
         if run["stage_id"] != stage_machine.PLANNER:
             score += 50
         if run["workflow_id"] == preferred_workflow_id:
@@ -1120,6 +1120,7 @@ def bootstrap_planner(
     goal_id: str = "",
     work_item_id: str = "",
     prompt: str = "",
+    recover_orphans: bool = False,
 ) -> dict:
     """Ensure a v6 launch ticket exists for the next canonical dispatch.
 
@@ -1132,6 +1133,8 @@ def bootstrap_planner(
     if not workflow_id:
         raise ValueError("workflow_id is required for v6 bootstrap")
     worktree_path = normalize_path(worktree_path) if worktree_path else ""
+    if recover_orphans:
+        reconcile_orphaned_launches(conn, workflow_id=workflow_id, stale_after=0)
 
     action = next_action(conn, workflow_id=workflow_id)
     if action is not None:
@@ -1232,6 +1235,7 @@ def bootstrap_native_plan_handoff(
     goal_id: str = "",
     work_item_id: str = "",
     prompt: str = "",
+    recover_orphans: bool = False,
 ) -> dict:
     """Bootstrap Guardian provisioning when native Plan mode already planned.
 
@@ -1245,6 +1249,8 @@ def bootstrap_native_plan_handoff(
     if not workflow_id:
         raise ValueError("workflow_id is required for v6 bootstrap")
     worktree_path = normalize_path(worktree_path) if worktree_path else ""
+    if recover_orphans:
+        reconcile_orphaned_launches(conn, workflow_id=workflow_id, stale_after=0)
 
     action = next_action(conn, workflow_id=workflow_id)
     if action is not None:

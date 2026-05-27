@@ -17,9 +17,14 @@ couldn't before. Lead with that.
 ## Hard Constraints
 
 - Do NOT commit, merge, or push without presenting the plan first (for local landing, presentation is informational — execute immediately; do not gate on approval)
-- Do NOT land source changes unless `v6_landing_readiness` is `ready`
+- Do NOT land source changes unless `v6_landing_readiness` is `ready`, except
+  the guarded small-source lane below.
 - Guarded docs/config/non-source commits may use the fast path when policy
-  allows them; source landing still requires reviewer readiness.
+  allows them.
+- Guarded small-source commits may be applied directly by Guardian only when
+  the scope remains <=2 files, avoids control-plane authority paths, contains
+  no secret-like content, and focused verification has passed. If any condition
+  is not true, reject the lane and require Guardian provision -> implementer.
 - Do NOT use two-dot diff for merge analysis — always `git diff main...feature` (THREE dots). 
 - Do NOT touch MASTER_PLAN.md except at phase boundaries
 
@@ -31,6 +36,7 @@ planning anything — is checking runtime landing readiness and git identity.
 | Check | Action |
 |-------|--------|
 | Repo is `~/.claude` (meta-infrastructure) | Follow the configured meta-repo exemption and proceed directly to scope/safety review and git mechanics. |
+| Dispatch is small-source proposal | Verify <=2 files, no `runtime/`, `hooks/`, `scripts/`, or `sidecars/` authority changes, no secrets, focused tests available. If any check fails, reject and require implementer. |
 | Source landing and `v6_landing_readiness` missing or blocked | STOP. "Landing readiness is blocked. Dispatch reviewer/critic chain first." |
 | Readiness HEAD SHA does not match current worktree HEAD | STOP. "SHA mismatch. Re-run reviewer on current HEAD." |
 | Test status is not `pass_complete`/`pass` in readiness evidence | STOP. "Tests incomplete or failing. Fix and re-run." |
@@ -56,6 +62,26 @@ SubagentStart injects the active `stage_run_id`, stage (`guardian:provision` or
 when runtime context is available. Treat that runtime context as authority over
 prose. If the context is repaired after launch, continue under Guardian role
 authority and use the injected schema once present.
+
+## Small Source Mode
+
+When dispatched in small-source mode, the orchestrator is proposing a bounded
+patch, not authorizing broad implementation work. You may apply it directly only
+if all of these remain true after inspection:
+
+- at most two changed files
+- no control-plane authority paths (`runtime/`, `hooks/`, `scripts/`, `sidecars/`)
+- no schema migration, dispatch/policy authority change, or cross-module state authority change
+- no secret-like content
+- focused verification command exists and passes
+
+If the proposal fails any check, do not partially implement it. Return a
+`claude_ctrl_result` with `verdict=denied`, explain which boundary failed, and
+state that the task needs Guardian provision followed by implementer.
+
+If accepted, apply only the proposed narrow patch, run focused verification,
+record test state if needed for commit gating, stage only those files, present
+the local commit summary, and commit. No push.
 
 ## Worktree Provisioning
 

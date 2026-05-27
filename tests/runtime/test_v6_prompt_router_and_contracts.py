@@ -2,6 +2,7 @@
 
 import json
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -106,6 +107,110 @@ def test_prompt_router_resume_prefers_active_nonplanner_over_branch_planner(conn
     assert route["workflow_id"] == "fix-extraction-scoring"
     assert route["bootstrap"]["stage_id"] == "guardian:provision"
     assert "launch guardian" in route["dispatch_context"]
+
+
+def test_prompt_router_resume_relaunches_orphaned_planner(conn, tmp_path):
+    run = stage_runs.create_stage_run(
+        conn,
+        workflow_id="wf-resume",
+        stage_id="planner",
+        worktree_path=str(tmp_path),
+    )
+    ticket = stage_runs.issue_ticket(conn, stage_run_id=run["id"])
+    stage_runs.claim_ticket(
+        conn,
+        ticket_id=ticket["id"],
+        subagent_type="planner",
+        session_id="sess-planner",
+        agent_id="agent-planner",
+    )
+
+    route = prompt_router.route_prompt(
+        conn,
+        workflow_id="wf-resume",
+        worktree_path=str(tmp_path),
+        prompt="Just resume the planner.",
+    )
+
+    assert route["workflow_id"] == "wf-resume"
+    assert "V6_DISPATCH_READY: launch planner for stage planner" in route["dispatch_context"]
+    assert route["bootstrap"]["stage_run"]["id"] == run["id"]
+    refreshed = stage_runs.get_stage_run(conn, run["id"])
+    assert refreshed["status"] == "pending"
+    assert refreshed["metadata"]["orphan_reconcile_reason"] == "launched_or_running_without_active_marker"
+
+
+def test_prompt_router_resume_keeps_live_marker_running(conn, tmp_path):
+    run = stage_runs.create_stage_run(
+        conn,
+        workflow_id="wf-live",
+        stage_id="planner",
+        worktree_path=str(tmp_path),
+    )
+    ticket = stage_runs.issue_ticket(conn, stage_run_id=run["id"])
+    stage_runs.claim_ticket(
+        conn,
+        ticket_id=ticket["id"],
+        subagent_type="planner",
+        session_id="sess-planner",
+        agent_id="agent-planner",
+    )
+    conn.execute(
+        """
+        INSERT INTO agent_markers (
+            agent_id, role, started_at, is_active, status, workflow_id, project_root
+        ) VALUES ('agent-planner', 'planner', 1, 1, 'active', 'wf-live', ?)
+        """,
+        (str(tmp_path),),
+    )
+
+    route = prompt_router.route_prompt(
+        conn,
+        workflow_id="wf-live",
+        worktree_path=str(tmp_path),
+        prompt="Just resume the planner.",
+    )
+
+    assert "V6_DISPATCH_STATUS: active stage is already launched/running" in route["dispatch_context"]
+    assert route["bootstrap"]["ticket"] is None
+    refreshed = stage_runs.get_stage_run(conn, run["id"])
+    assert refreshed["status"] == "launched"
+
+
+def test_prompt_router_resume_prefers_orphaned_nonplanner_over_branch_planner(conn, tmp_path):
+    stage_runs.bootstrap_planner(conn, workflow_id="main", worktree_path=str(tmp_path), prompt="stale")
+    impl_worktree = tmp_path / "impl"
+    impl_run = stage_runs.create_stage_run(
+        conn,
+        workflow_id="wf-impl",
+        stage_id="implementer",
+        worktree_path=str(impl_worktree),
+    )
+    ticket = stage_runs.issue_ticket(conn, stage_run_id=impl_run["id"])
+    stage_runs.claim_ticket(
+        conn,
+        ticket_id=ticket["id"],
+        subagent_type="implementer",
+        session_id="sess-impl",
+        agent_id="agent-impl",
+    )
+
+    route = prompt_router.route_prompt(
+        conn,
+        workflow_id="main",
+        worktree_path=str(tmp_path),
+        prompt="Continue the dispatch from runtime state.",
+    )
+
+    assert route["workflow_id"] == "wf-impl"
+    assert "V6_DISPATCH_READY: launch implementer for stage implementer" in route["dispatch_context"]
+    assert route["bootstrap"]["stage_run"]["id"] == impl_run["id"]
+
+
+def test_orchestrator_prompt_treats_process_error_as_dispatch_recovery():
+    text = (Path(__file__).resolve().parents[2] / "CLAUDE.md").read_text(encoding="utf-8")
+    assert "PROCESS ERROR` as dispatch recovery events" in text
+    assert "do not inspect, implement, or continue the source task directly" in text
 
 
 def test_prompt_router_explicit_chat_passthrough(conn, tmp_path):

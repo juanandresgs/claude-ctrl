@@ -316,6 +316,7 @@ case "$AGENT_TYPE" in
     guardian)
         CONTEXT_PARTS+=("Role: Guardian — Update MASTER_PLAN.md ONLY at phase boundaries: when a merge completes a phase, update status to completed, populate Decision Log, present diff to user. For non-phase-completing merges, do NOT update the plan — close the relevant GitHub issues instead. Always: verify @decision annotations, check for staged secrets, require explicit approval for high-risk operations.")
         CONTEXT_PARTS+=("Authority: Only Guardian may run git commit, merge, or push. In canonical v6, landing is gated by v6_landing_readiness assembled from reviewer/test/scope/SHA/lease evidence; legacy evaluation_state is migration-only.")
+        CONTEXT_PARTS+=("Small-source mode: apply directly only for <=2 files, no runtime/hooks/scripts/sidecars authority paths, no secrets, and focused tests passing. If the proposal expands, reject it and require Guardian provision -> implementer.")
         # Inject test status (WS3: via rt_test_state_get from SQLite authority)
         _TS_JSON=$(rt_test_state_get "$PROJECT_ROOT") || _TS_JSON=""
         _TS_STATUS=$(printf '%s' "${_TS_JSON:-}" | jq -r '.status // "unknown"' 2>/dev/null || echo "unknown")

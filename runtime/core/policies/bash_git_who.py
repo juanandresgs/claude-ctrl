@@ -52,7 +52,7 @@ import time
 from typing import Optional
 
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
-from runtime.core.policies.fast_path import guarded_non_source_commit
+from runtime.core.policies.fast_path import guarded_non_source_commit, guarded_small_source_commit
 
 def check(request: PolicyRequest) -> Optional[PolicyDecision]:
     """Deny git operations requiring a Guardian lease when no valid active lease covers the op.
@@ -82,6 +82,9 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
 
     fast_path = guarded_non_source_commit(request)
     if fast_path.eligible:
+        return None
+    small_source_path = guarded_small_source_commit(request)
+    if small_source_path.eligible:
         return None
 
     lease = request.context.lease

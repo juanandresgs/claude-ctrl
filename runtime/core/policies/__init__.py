@@ -33,7 +33,7 @@ def register_all(registry: PolicyRegistry) -> None:
 
     Write-path priorities (PE-W2 + PE-W5):
       100  branch_guard       -- block source writes on main/master
-      200  write_who          -- only implementer may write source files
+      200  write_who          -- implementer writes source; Guardian has bounded small-source exception
       250  enforcement_gap    -- deny persistent linter gaps
       300  plan_guard         -- only planner may write governance markdown
       400  plan_exists        -- MASTER_PLAN.md must exist + staleness gate
@@ -47,6 +47,7 @@ def register_all(registry: PolicyRegistry) -> None:
       100  bash_tmp_safety           -- deny /tmp writes
       200  bash_worktree_cwd         -- deny bare cd into .worktrees/
       250  bash_worktree_nesting     -- deny worktree add from inside .worktrees/ (Gap 5)
+      275  bash_source_write         -- deny shell source writes from non-implementers/main
       300  bash_git_who              -- lease-based WHO enforcement for git ops (expanded Gap 1)
       340  worktree_harness_guard    -- deny harness-native unmanaged worktrees
       350  bash_worktree_creation    -- deny git worktree add from non-guardian roles (W-GWT-3)
@@ -146,6 +147,7 @@ def register_all(registry: PolicyRegistry) -> None:
         bash_force_push,
         bash_git_who,
         bash_main_sacred,
+        bash_source_write,
         bash_test_gate,
         bash_tmp_safety,
         bash_workflow_scope,
@@ -160,6 +162,7 @@ def register_all(registry: PolicyRegistry) -> None:
     bash_worktree_nesting.register(
         registry
     )  # Gap 5: prevent nested worktree creation (priority 250)
+    bash_source_write.register(registry)
     bash_git_who.register(registry)
     bash_worktree_creation.register(registry)
     bash_main_sacred.register(registry)

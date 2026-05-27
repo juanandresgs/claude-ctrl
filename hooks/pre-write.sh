@@ -22,7 +22,7 @@
 #
 # Policy check order (first deny wins — enforced by PolicyRegistry priority):
 #   100  branch_guard       — block source writes on main/master
-#   200  write_who          — only implementer may write source files
+#   200  write_who          — implementer writes source; Guardian has bounded small-source exception
 #   250  enforcement_gap    — deny persistent linter gaps
 #   300  plan_guard         — only planner may write governance markdown
 #   400  plan_exists        — MASTER_PLAN.md must exist + staleness gate

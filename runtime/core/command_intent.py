@@ -48,6 +48,8 @@ _WORKTREE_BOOLEAN_FLAGS = frozenset(
     ]
 )
 _WORKTREE_REMOVE_BOOLEAN_FLAGS = frozenset(["-f", "--force"])
+_OUTPUT_REDIRECT_OP_RE = re.compile(r"^(?:\d*)?(?:&>>|&>|>>|>\||>)(.*)$")
+_SHELL_WRITE_COMMANDS = frozenset({"cp", "mv", "touch"})
 
 
 @dataclass(frozen=True)
@@ -65,6 +67,7 @@ class BashCommandIntent:
     worktree_action: Optional[str]
     worktree_target_raw: str
     worktree_target_resolved: str
+    shell_write_targets: tuple[str, ...]
     likely_worktree_add: bool
     likely_worktree_remove: bool
 
@@ -143,6 +146,101 @@ def _extract_worktree_remove_target(args: list[str]) -> str:
     return ""
 
 
+def _segment_command_index(segment: list[str]) -> int:
+    index = 0
+    while index < len(segment) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=.*$", segment[index]):
+        index += 1
+    while index < len(segment) and segment[index] in {"command", "builtin"}:
+        index += 1
+    return index
+
+
+def _is_output_redirect_token(token: str) -> bool:
+    return bool(_OUTPUT_REDIRECT_OP_RE.match(token))
+
+
+def _extract_tee_targets(segment: list[str]) -> list[str]:
+    cmd_index = _segment_command_index(segment)
+    if cmd_index >= len(segment) or segment[cmd_index] != "tee":
+        return []
+
+    targets: list[str] = []
+    index = cmd_index + 1
+    while index < len(segment):
+        token = segment[index]
+        if token == "--":
+            index += 1
+            continue
+        if _is_output_redirect_token(token):
+            index += 1
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        targets.append(token)
+        index += 1
+    return targets
+
+
+def _extract_simple_write_targets(segment: list[str]) -> list[str]:
+    cmd_index = _segment_command_index(segment)
+    if cmd_index >= len(segment):
+        return []
+
+    command = segment[cmd_index]
+    if command not in _SHELL_WRITE_COMMANDS:
+        return []
+
+    operands = [
+        token
+        for token in segment[cmd_index + 1 :]
+        if not token.startswith("-") and not _is_output_redirect_token(token)
+    ]
+    if command in {"cp", "mv"}:
+        return operands[-1:] if len(operands) >= 2 else []
+    return operands
+
+
+_SHELL_SEGMENT_SEPARATORS = frozenset({"|", "&&", "||", ";", "&"})
+
+
+def _split_shell_segments(tokens: list[str]) -> list[list[str]]:
+    """Split token list into segments separated by shell operators."""
+    segments: list[list[str]] = []
+    current: list[str] = []
+    for token in tokens:
+        if token in _SHELL_SEGMENT_SEPARATORS:
+            if current:
+                segments.append(current)
+            current = []
+        else:
+            current.append(token)
+    if current:
+        segments.append(current)
+    return segments
+
+
+def _extract_shell_write_target_tokens(tokens: list[str]) -> list[str]:
+    targets: list[str] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        match = _OUTPUT_REDIRECT_OP_RE.match(token)
+        if match:
+            attached = match.group(1)
+            if attached:
+                targets.append(attached)
+            elif index + 1 < len(tokens):
+                targets.append(tokens[index + 1])
+                index += 1
+        index += 1
+
+    for segment in _split_shell_segments(tokens):
+        targets.extend(_extract_tee_targets(segment))
+        targets.extend(_extract_simple_write_targets(segment))
+    return targets
+
+
 def build_bash_command_intent(command: str, *, cwd: str = "") -> Optional[BashCommandIntent]:
     """Build a structured command-intent object from raw bash text.
 
@@ -158,8 +256,9 @@ def build_bash_command_intent(command: str, *, cwd: str = "") -> Optional[BashCo
         return None
 
     shell_parse_error = False
+    tokens: list[str] = []
     try:
-        _shell_tokens(command)
+        tokens = _shell_tokens(command)
     except ValueError:
         shell_parse_error = True
 
@@ -183,6 +282,12 @@ def build_bash_command_intent(command: str, *, cwd: str = "") -> Optional[BashCo
         if worktree_target_raw:
             anchor = command_cwd or base_cwd or cwd
             worktree_target_resolved = _resolve_from_base(anchor, worktree_target_raw)
+    shell_write_targets: list[str] = []
+    for target in _extract_shell_write_target_tokens(tokens):
+        if not target or target.startswith("&"):
+            continue
+        anchor = command_cwd or base_cwd or cwd
+        shell_write_targets.append(_resolve_from_base(anchor, target))
 
     return BashCommandIntent(
         command=command,
@@ -196,6 +301,7 @@ def build_bash_command_intent(command: str, *, cwd: str = "") -> Optional[BashCo
         worktree_action=worktree_action,
         worktree_target_raw=worktree_target_raw,
         worktree_target_resolved=worktree_target_resolved,
+        shell_write_targets=tuple(shell_write_targets),
         likely_worktree_add=bool(_WORKTREE_ADD_RE.search(command)),
         likely_worktree_remove=bool(_WORKTREE_REMOVE_RE.search(command)),
     )

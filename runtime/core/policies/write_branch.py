@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Optional
 
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
+from runtime.core.policies.fast_path import guardian_small_source_write_allowed
 from runtime.core.policy_utils import is_skippable_path, is_source_file
 
 
@@ -104,16 +105,19 @@ def branch_guard(request: PolicyRequest) -> Optional[PolicyDecision]:
 
     if branch not in ("main", "master"):
         return None
+    if guardian_small_source_write_allowed(request, file_path):
+        return None
 
     return PolicyDecision(
         action="deny",
         reason=(
             f"BLOCKED: Cannot write source code on {branch} branch. "
             "Sacred Practice #2: Main is sacred.\n\n"
-            "Action: Launch Guardian naturally with provisioning capability. "
-            "Guardian runs `cc-policy worktree provision`; after it reports the "
-            "leased worktree, launch implementer as an ordinary Agent with no "
-            "isolation flag. Do not retry the source edit from the orchestrator."
+            "Action: For a bounded <=2 file source fix, launch Guardian in "
+            "small-source mode with the exact proposed patch and focused test. "
+            "Guardian may apply it directly only if it remains narrow; "
+            "otherwise Guardian must require provision -> implementer. For "
+            "larger work, launch Guardian with provisioning capability."
         ),
         policy_name="branch_guard",
     )

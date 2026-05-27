@@ -67,7 +67,7 @@ if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
     "hookEventName": "PreToolUse",
     "permissionDecision": "deny",
     "blockingHook": "branch-guard.sh",
-    "permissionDecisionReason": "BLOCKED: Cannot write source code on $CURRENT_BRANCH branch. Sacred Practice #2: Main is sacred.\n\nAction: Launch Guardian naturally with provisioning capability. Guardian runs \`cc-policy worktree provision\`; after it reports the leased worktree, launch implementer as an ordinary Agent with no isolation flag. Do not retry the source edit from the orchestrator."
+    "permissionDecisionReason": "BLOCKED: Cannot write source code on $CURRENT_BRANCH branch. Sacred Practice #2: Main is sacred.\n\nAction: For a bounded <=2 file source fix, launch Guardian in small-source mode with the exact proposed patch and focused test. Guardian may apply it directly only if it remains narrow; otherwise Guardian must require provision -> implementer. For larger work, launch Guardian with provisioning capability."
   }
 }
 EOF

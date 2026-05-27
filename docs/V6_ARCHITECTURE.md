@@ -145,6 +145,7 @@ Important behavior:
 - `pre-agent.sh` denies only harness worktree isolation for canonical launches; missing launch claims become context repair work, not authorization failures.
 - `subagent-start.sh` resolves by launch id, child metadata, agent id, pending next action, pending/blocked stage run, then natural role/workflow fallback; for `guardian:land`, it recomputes `v6_landing_readiness` at seating time.
 - `v6-result-submit.sh` parses the final fenced result block, submits it to `stage_runs.submit_result()`, prepares the next internal launch binding, and emits `V6_DISPATCH_READY`.
+- Resume prompts reconcile orphaned `launched`/`running` stages through `stage_runs.reconcile_orphaned_launches()` before bootstrap chooses a launch. Transport failures relaunch the same role/stage when no active marker remains; they do not authorize orchestrator implementation.
 - `dispatch next` returns only v6 `dispatch_next_actions_v6`; no legacy dispatch fallback remains.
 - Critic is first-order: v6 tries external Codex/Gemini via `critic_runs`; if unavailable it emits a natural launch for an adversarial `critic` subagent.
 
@@ -185,7 +186,7 @@ flowchart TD
     C -->|other/no lease| P[legacy lease/policy checks]
 ```
 
-v6 changes `bash_git_who.py` so implementers cannot mutate git by default. Guardian owns commits, merges, pushes, worktree lifecycle, stash, branch/ref changes, and landing. The only implemented implementer exception is a scoped checkpoint `git commit` with explicit lease metadata:
+v6 changes `bash_git_who.py` so implementers cannot mutate git by default. Guardian owns commits, merges, pushes, worktree lifecycle, stash, branch/ref changes, and landing. Guardian also owns the bounded small-source lane: <=2 non-authority source files may be applied and committed by Guardian on main after focused tests, or rejected back to provision -> implementer. The only implemented implementer exception is a scoped checkpoint `git commit` with explicit lease metadata:
 
 ```json
 {"work_item_grant":{"can_commit_branch":true}}
@@ -218,6 +219,8 @@ Even with that grant, `git push` and other git mutations remain denied for imple
 7. **Automatic critic worker.** Implementer results invoke the bounded critic worker immediately; `worker_pending` actions cannot be launch-bound before worker completion/fallback.
 8. **Safe migration path.** `scripts/claude-v6-migrate.sh` backs up, verifies, installs, and restores existing Claude config/history state.
 9. **Release defaults proven.** Hidden regular Stop review is off by default; deterministic SubagentStop/stage review remains on.
+10. **Dispatch resume recovery.** `prompt_router` treats resume/continue dispatch prompts as runtime recovery, reconciles orphaned launched/running stages, and relaunches the same canonical role.
+11. **Guardian small-source lane.** Write and git policies share `fast_path.py` classifiers so bounded Guardian source fixes have a real allow path while broader source work stays on provision -> implementer -> reviewer -> Guardian land.
 
 ## Remaining gaps / next hardening
 

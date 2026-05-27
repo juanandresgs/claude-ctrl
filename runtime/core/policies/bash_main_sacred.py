@@ -25,7 +25,7 @@ import subprocess
 from typing import Optional
 
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
-from runtime.core.policies.fast_path import guarded_non_source_commit
+from runtime.core.policies.fast_path import guarded_non_source_commit, guarded_small_source_commit
 
 
 def _get_branch(target_dir: str) -> str:
@@ -100,6 +100,8 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
 
     if guarded_non_source_commit(request).eligible:
         return None
+    if guarded_small_source_commit(request).eligible:
+        return None
 
     # Exception: merge finalisation commit.
     if _merge_head_exists(target_dir):
@@ -114,9 +116,10 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
         action="deny",
         reason=(
             f"Cannot commit directly to {branch}. Sacred Practice #2: Main is sacred. "
-            "Launch Guardian in provision mode first; Guardian runs "
-            "`cc-policy worktree provision` to create the leased worktree. "
-            "Source landing later requires reviewer readiness and Guardian land mode."
+            "Guardian small-source commits are allowed only for <=2 non-authority "
+            "files after focused tests. Otherwise launch Guardian in provision "
+            "mode first; source landing later requires reviewer readiness and "
+            "Guardian land mode."
         ),
         policy_name="bash_main_sacred",
     )

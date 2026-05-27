@@ -2,13 +2,13 @@
 # WHO enforcement for Write|Edit operations on source files.
 # PreToolUse hook — matcher: Write|Edit
 #
-# Only the implementer agent role may write source files. All other roles
-# (orchestrator/empty, planner, Plan, tester, guardian) are denied with a
-# message directing them to dispatch an implementer. Non-source files are
-# not governed here; TKT-004 handles governance markdown separately.
+# Implementer owns normal source writes. Guardian has a bounded small-source
+# lane in the Python policy engine; this legacy shell guard remains strict for
+# source writes it evaluates directly. Non-source files are not governed here;
+# TKT-004 handles governance markdown separately.
 #
 # @decision DEC-FORK-005
-# @title Write-side WHO enforcement: only implementer may write source files
+# @title Write-side WHO enforcement: implementer source writes plus Guardian small-source exception
 # @status accepted
 # @rationale The bootstrap kernel had git WHO enforcement (guard.sh) but no
 # write-side WHO enforcement. Any agent could freely write source files and
@@ -67,7 +67,7 @@ PROJECT_ROOT=$(git -C "$FILE_DIR" rev-parse --show-toplevel 2>/dev/null || detec
 # (DEC-IDENTITY-NO-ENV-VAR). CLAUDE_AGENT_ROLE env var is NOT consulted.
 ROLE=$(current_active_agent_role "$PROJECT_ROOT")
 
-# ALLOW: implementer is the only role permitted to write source files
+# ALLOW: implementer is the normal source-writing role on this legacy path
 if [[ "$ROLE" == "implementer" ]]; then
     exit 0
 fi
@@ -79,9 +79,9 @@ else
     ROLE_LABEL="$ROLE"
 fi
 
-DENY_REASON="BLOCKED: $ROLE_LABEL cannot write source files. Only the implementer agent may write source code.
+DENY_REASON="BLOCKED: $ROLE_LABEL cannot write source files through this lane. Source writes require either an implementer in the provisioned worktree or Guardian small-source mode for a bounded fix.
 
-Action: Launch or continue implementer as an ordinary Agent with no isolation flag, using the Guardian-provisioned worktree. Do not retry the source edit from the orchestrator or Guardian."
+Action: For a bounded <=2 file source fix, launch Guardian in small-source mode with the exact proposed patch and focused test. Guardian may apply it directly only if it remains narrow; otherwise Guardian must require provision -> implementer. Do not retry the source edit from the orchestrator."
 
 escaped_reason=$(printf '%s' "$DENY_REASON" | jq -Rs .)
 

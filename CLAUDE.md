@@ -117,21 +117,23 @@ The orchestrator dispatches to specialized agents — it does NOT write source c
 
 ### Source Edit Routing
 
-The orchestrator never writes source files directly. If a task requires source-code changes, dispatch an implementer (or continue one that already owns that workflow) and let that role perform the edits in its worktree.
+The orchestrator never writes source files directly. If a task requires source-code changes, route it through Guardian small-source review or through Guardian provisioning to an implementer; the orchestrator only proposes the change and carries runtime context.
 
-Do not attempt the first source edit yourself to discover whether policy allows it. For source work from the project root or main branch, route before editing:
+Do not attempt the first source edit yourself to discover whether policy allows it. For source work, choose a lane before editing:
 
 | User intent / boundary | Next capability |
 | --- | --- |
 | "plan" / unclear source task | Launch `planner` naturally. |
-| "implement", "fix", "change code" with no provisioned worktree | Launch `guardian` in provision mode naturally. Guardian runs `cc-policy worktree provision`; after it reports the worktree, launch `implementer` as an ordinary Agent with no isolation flag. |
+| Small bounded source change, usually <=2 files and no state-authority/schema/hook/runtime dispatch change | Launch `guardian` naturally in small-source mode. Give exact files, proposed change, and focused verification. Guardian may apply directly and commit after tests, or reject and require Guardian provision → implementer with the reason. |
+| Source work on `main`/`master`, no safe existing worktree, cross-module work, state-authority changes, or unclear scope | Launch `guardian` in provision mode naturally. Guardian runs `cc-policy worktree provision`; after it reports the worktree, launch `implementer` as an ordinary Agent with no isolation flag. |
 | Source worktree already provisioned | Launch or continue `implementer` as an ordinary Agent with no isolation flag. |
 | Implementation finished | Let runtime route to `critic`, then launch `reviewer` when requested. |
 | "commit", "merge", "land" source work | Launch `guardian` in land mode only after reviewer readiness exists. |
 
 If write-side WHO enforcement denies a source edit, do not retry the edit from the orchestrator. Treat the denial as a routing signal:
-- **No provisioned worktree for this work** — launch Guardian in provision mode first; do not use `Agent(isolation:"worktree")`.
-- **No active implementer for the provisioned worktree** — dispatch one with the appropriate Evaluation Contract and Scope Manifest using an ordinary Agent launch.
+- **Small source lane may apply** — launch Guardian in small-source mode with the exact proposed patch, file list, risk statement, and focused test command. Guardian applies it only if still narrow; otherwise Guardian must reject it and require the implementer lane.
+- **No safe worktree or scope is not small** — launch Guardian in provision mode first; do not use `Agent(isolation:"worktree")`.
+- **No active implementer for the chosen worktree** — dispatch one with the appropriate Evaluation Contract and Scope Manifest using an ordinary Agent launch.
 - **An implementer already owns this workflow** — continue it via SendMessage with the specific edit instruction.
 
 Session HUD state or subagent markers do not prove the actor behind the current tool call. Enforcement decisions about a specific write take precedence over coarser session-level or statusline role labels.
@@ -174,7 +176,7 @@ The orchestrator must:
 3. After Guardian provisioning, launch `implementer` naturally in the provisioned worktree; do not write the source edit from the orchestrator.
 4. Use injected runtime context as authority when present; if context is repaired later, continue under the role authority that was launched.
 5. Continue chaining on every `V6_DISPATCH_READY` emitted by SubagentStop.
-6. Treat `BLOCKED`, `ERROR`, or `PROCESS ERROR` as hard stops and report the repair path.
+6. Treat connection loss, missing result blocks, `ERROR`, or `PROCESS ERROR` as dispatch recovery events. Ask the runtime to resume/relaunch the same stage and role; do not inspect, implement, or continue the source task directly from the orchestrator. Only a valid `claude_ctrl_result` terminal or blocked verdict is semantic evidence to stop the chain and report the repair path.
 
 External critics are first-order: after implementer completion, the runtime may run Codex/Gemini automatically. If they succeed, dispatch proceeds to reviewer without a visible critic subagent. If unavailable, runtime emits `V6_DISPATCH_READY` for an adversarial `critic` subagent.
 
@@ -195,8 +197,23 @@ Skip planner only when ALL hold:
 - no state authority changes are involved
 - no Evaluation Contract is needed beyond obvious file-local behavior
 
-Escalate to planner for any source-code change or any task that may reach Guardian.
-For those tasks, the planner's Evaluation Contract is mandatory.
+### Small Source Lane
+Skip planner and implementer only when ALL hold:
+- source scope is small and bounded, usually <=2 files
+- no new worktree, commit, merge, push, schema migration, hook/policy/runtime dispatch authority, or cross-module state authority change is needed
+- focused tests or a concrete verification command can prove the change
+
+The orchestrator launches `guardian` in small-source mode and proposes the
+patch. Guardian is the only role that may apply this lane directly. Guardian
+must verify the file count and authority boundary before editing; if the change
+expands or touches a protected authority, Guardian rejects the lane and requires
+Guardian provision → implementer. The orchestrator does not write the source
+file through `Write`, `Edit`, or `Bash` redirection.
+
+Escalate to planner for unclear source work, broad changes, state-authority
+changes, or any task where the acceptance target needs decomposition. Escalate
+to Guardian provision for source work on `main`/`master` or when no safe
+existing worktree is available.
 
 ### Debugging Discipline
 

@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Optional
 
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
+from runtime.core.policies.fast_path import guardian_small_source_write_allowed
 from runtime.core.policy_utils import (
     SOURCE_EXTENSIONS,
     is_skippable_path,
@@ -188,6 +189,8 @@ def plan_exists(request: PolicyRequest) -> Optional[PolicyDecision]:
     if not is_source_file(file_path):
         return None
     if is_skippable_path(file_path):
+        return None
+    if guardian_small_source_write_allowed(request, file_path):
         return None
 
     # Skip meta-infrastructure

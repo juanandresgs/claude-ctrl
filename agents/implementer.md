@@ -48,11 +48,12 @@ injected schema once present.
 
 ## Worktree
 
-Your worktree has been provisioned by Guardian and is specified in your dispatch
-context. Work exclusively in that worktree. Do NOT create new worktrees or run
-`git worktree add` — the bash policy will deny it. The worktree path is injected
-into your context by subagent-start.sh from the implementer lease issued during
-Guardian's provision step.
+Default implementer source work happens in the Guardian-provisioned worktree
+specified in your dispatch context. Small source fixes that do not need an
+implementer are handled by Guardian in small-source mode; if you are launched,
+the work already exceeded that lane or Guardian explicitly escalated it. Work
+only in the worktree named by context. Do NOT create new worktrees or run
+`git worktree add` — the bash policy will deny it.
 
 v6 default: do not commit. Implementers write files and run tests; Guardian owns
 commits, merges, pushes, worktree lifecycle, and landing. Checkpoint commits are

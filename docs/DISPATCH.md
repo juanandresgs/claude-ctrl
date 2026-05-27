@@ -79,7 +79,14 @@ prepares the next internal launch binding, and reports either:
 - `V6_CRITIC_COMPLETE: ... V6_DISPATCH_READY: launch reviewer ...` when external critic succeeds;
 - `V6_CRITIC_FALLBACK: ... V6_DISPATCH_READY: launch critic ...` when external critics are unavailable/invalid;
 - `V6_STAGE_COMPLETE: ...`; or
-- a `BLOCKED`/`PROCESS ERROR` context message.
+- a recovery/status context message.
+
+Connection loss, missing result blocks, hook `ERROR`, and `PROCESS ERROR` are
+dispatch-recovery events, not permission for the orchestrator to implement the
+task directly. Resume prompts reconcile orphaned launched/running stages through
+`stage_runs.reconcile_orphaned_launches()` and relaunch the same role/stage when
+no active marker remains. Only a valid `claude_ctrl_result` verdict changes the
+semantic route.
 
 `critic` next actions use `worker_pending` while external providers run and are
 not launchable until the worker completes or publishes fallback. This prevents a

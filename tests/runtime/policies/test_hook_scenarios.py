@@ -334,7 +334,7 @@ def _configure_guardian_git_allow(repo: Path) -> None:
             "file_path": "src/app.ts",
             "content": _typescript_exports(),
             "expected_decision": "deny",
-            "reason_substring": "Launch Guardian naturally",
+            "reason_substring": "small-source mode",
         },
         {
             "id": "pre-write-no-plan-deny",
@@ -416,7 +416,7 @@ def test_pre_write_hook_cases(tmp_path, case):
             "file_path": "src/app.ts",
             "content": "export const x = 1;\n",
             "expected_decision": "deny",
-            "reason_substring": "ordinary Agent with no isolation flag",
+            "reason_substring": "small-source mode",
         },
         {
             "id": "write-guard-planner-deny",
@@ -511,6 +511,22 @@ def test_legacy_write_hooks(tmp_path, case):
             "expected_decision": "allow",
         },
         {
+            "id": "pre-bash-source-redirection-orchestrator-deny",
+            "setup": "repo",
+            "branch": "feature/test",
+            "command_template": 'cat > "{repo}/src/app.py" <<\'PY\'\nprint("x")\nPY',
+            "expected_decision": "deny",
+            "reason_substring": "small-source mode",
+        },
+        {
+            "id": "pre-bash-source-redirection-implementer-allow",
+            "setup": "repo",
+            "branch": "feature/test",
+            "role": "implementer",
+            "command_template": 'cat > "{repo}/src/app.py" <<\'PY\'\nprint("x")\nPY',
+            "expected_decision": "allow",
+        },
+        {
             "id": "pre-bash-non-git-allow",
             "setup": "project",
             "command": "ls -la",
@@ -529,6 +545,8 @@ def test_pre_bash_hook_cases(tmp_path, case):
 
     if case["setup"] == "guardian-ready":
         _configure_guardian_git_allow(project_root)
+    if case.get("role"):
+        _set_role(project_root, case["role"])
 
     command = case.get("command")
     if command is None:
@@ -536,4 +554,8 @@ def test_pre_bash_hook_cases(tmp_path, case):
 
     result = _run_bash_hook(project_root=project_root, cwd=cwd, command=command)
 
-    _assert_hook_result(result, expected_decision=case["expected_decision"])
+    _assert_hook_result(
+        result,
+        expected_decision=case["expected_decision"],
+        reason_substring=case.get("reason_substring"),
+    )

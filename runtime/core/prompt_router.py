@@ -44,10 +44,17 @@ DISPATCH_RESUME_PATTERNS = (
     "continue dispatch",
     "continue the dispatch",
     "dispatch from runtime state",
+    "just resume",
+    "resume dispatch",
+    "resume the dispatch",
+    "resume the planner",
+    "resume planner",
     "runtime state",
     "v6_dispatch_ready",
     "next dispatch",
 )
+
+DISPATCH_RESUME_EXACT = frozenset({"resume", "continue", "keep going"})
 
 
 @dataclass(frozen=True)
@@ -97,12 +104,13 @@ def route_prompt(
     if command in EXPLICIT_PASSTHROUGH_COMMANDS:
         return PromptRoute("pass_through", f"explicit_passthrough:{command}", workflow_id).as_dict()
 
+    resume_dispatch = _looks_like_dispatch_resume(prompt)
     embedded_ticket_id = stage_runs.find_ticket_id_in_text(prompt)
     if embedded_ticket_id:
         ticket = stage_runs.get_ticket(conn, embedded_ticket_id)
         if ticket:
             workflow_id = ticket["workflow_id"]
-    elif _looks_like_dispatch_resume(prompt):
+    elif resume_dispatch:
         workflow_id = stage_runs.resume_workflow_id(
             conn,
             preferred_workflow_id=workflow_id,
@@ -118,6 +126,7 @@ def route_prompt(
             goal_id=goal_id or ids["goal_id"],
             work_item_id=work_item_id or ids["work_item_id"],
             prompt=prompt,
+            recover_orphans=resume_dispatch,
         )
     else:
         bootstrap = stage_runs.bootstrap_planner(
@@ -127,6 +136,7 @@ def route_prompt(
             goal_id=goal_id or ids["goal_id"],
             work_item_id=work_item_id or ids["work_item_id"],
             prompt=prompt,
+            recover_orphans=resume_dispatch,
         )
     bootstrap["goal_id"] = goal_id or ids["goal_id"]
     bootstrap["work_item_id"] = work_item_id or ids["work_item_id"]
@@ -151,7 +161,13 @@ def _looks_like_native_plan_handoff(prompt: str) -> bool:
 
 def _looks_like_dispatch_resume(prompt: str) -> bool:
     text = " ".join((prompt or "").lower().split())
-    return bool(text and any(pattern in text for pattern in DISPATCH_RESUME_PATTERNS))
+    return bool(
+        text
+        and (
+            text.strip(".!?") in DISPATCH_RESUME_EXACT
+            or any(pattern in text for pattern in DISPATCH_RESUME_PATTERNS)
+        )
+    )
 
 
 def render_dispatch_context(bootstrap: dict) -> str:

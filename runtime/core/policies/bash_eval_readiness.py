@@ -35,7 +35,7 @@ from typing import Optional
 
 from runtime.core.leases import GitInvocation
 from runtime.core.policy_engine import PolicyDecision, PolicyRequest
-from runtime.core.policies.fast_path import guarded_non_source_commit
+from runtime.core.policies.fast_path import guarded_non_source_commit, guarded_small_source_commit
 from runtime.core.policy_utils import (
     current_workflow_id,
     extract_merge_ref,
@@ -112,6 +112,8 @@ def check(request: PolicyRequest) -> Optional[PolicyDecision]:
         return None
 
     if guarded_non_source_commit(request).eligible:
+        return None
+    if guarded_small_source_commit(request).eligible:
         return None
 
     # Determine target dir.
