@@ -448,22 +448,22 @@ fi
 if [[ -z "$SUMMARY_TEXT" ]]; then
     log_info "POST-TASK" "all 4 summary.md detection tiers failed — emitting advisory (DEC-AV-LOUD-FAIL-001)"
     append_audit "$PROJECT_ROOT" "autoverify_loud_fail" \
-        "post-task: all summary.md tiers failed; emitting advisory and writing .autoverify-failed"
+        "post-task: all summary.md tiers failed; emitting advisory (no relay/override paths remain)"
 
-    # Write .autoverify-failed signal for Component 5 emergency override in pre-bash.sh.
-    # Format: failed|epoch|session_id — Component 5 validates session and age (<300s).
-    echo "failed|$(date +%s)|${CLAUDE_SESSION_ID:-$$}" > "${CLAUDE_DIR}/.autoverify-failed" 2>/dev/null || true
+    # .autoverify-failed signal is no longer written — the emergency override (DEC-AV-OVERRIDE-001)
+    # and relay path (DEC-AV-RELAY-001) have been removed under sole-authority (DEC-HUMAN-TOKEN-001).
+    log_info "POST-TASK" ".autoverify-failed signal obsolete — sole authority for proof is SQLite human-token gate"
 
     # Write .agent-findings for next-prompt injection via prompt-submit.sh.
     _LF_FINDINGS="${CLAUDE_DIR}/.agent-findings"
-    _LF_FINDING="tester|Auto-verify chain failed: all summary.md detection tiers exhausted. Relay 'AUTOVERIFY: CLEAN' from tester output to recover."
+    _LF_FINDING="tester|Auto-verify chain failed: all summary.md detection tiers exhausted. Present verification evidence to the user and await typed approval."
     if ! grep -qxF "$_LF_FINDING" "$_LF_FINDINGS" 2>/dev/null; then
         echo "$_LF_FINDING" >> "$_LF_FINDINGS" 2>/dev/null || true
     fi
     # DEC-STATE-KV-007: Emit audit event alongside flat-file delivery (best-effort).
     state_emit "agent.finding" "{\"agent\":\"tester\",\"text\":\"Auto-verify chain failed: all summary.md detection tiers exhausted\"}" 2>/dev/null || true
 
-    _LF_MSG="AUTOVERIFY CHAIN FAILED: post-task.sh exhausted all 4 summary.md detection tiers (active marker, breadcrumb, session scan, project-scoped scan) and found no tester summary. The proof gate is at risk of deadlock (proof=${PROOF_STATUS}, Guardian blocked at Gate A). RECOVERY OPTIONS: (1) If the tester reported 'AUTOVERIFY: CLEAN' in its response, relay that text in your next prompt — prompt-submit.sh detects it and promotes proof-status to verified. (2) If the tester showed a clean run, relay its output and let the user approve with 'approved'/'lgtm'/'verified'. (3) Emergency override: .autoverify-failed signal is active — if necessary, a direct write to .proof-status will be allowed within 300s."
+    _LF_MSG="Tester run complete but post-task.sh could not locate the tester summary (all detection tiers exhausted). Present whatever verification evidence you have to the user and await their typed approval (approved/lgtm/verified). Proof reaches 'verified' only via human approval — there is no relay or override path. Do not dispatch Guardian without typed approval."
     _LF_ESC=$(printf '%s' "$_LF_MSG" | jq -Rs .)
     cat <<EOF
 {
@@ -581,7 +581,7 @@ if ! echo "$SUMMARY_TEXT" | grep -q 'AUTOVERIFY: CLEAN'; then
             "High-confidence assessment meets all auto-verify criteria but AUTOVERIFY: CLEAN signal was not emitted"
 
         _MISS_ESCAPED=$(printf '%s' \
-            'AUTOVERIFY EXPECTED: Tester wrote High confidence with full coverage but omitted AUTOVERIFY: CLEAN signal. The assessment objectively meets all auto-verify criteria. Dispatch Guardian with INFER-VERIFY in the prompt to enable inference-based approval, or approve manually.' \
+            'Tester wrote a High-confidence, full-coverage assessment. Present the verification report to the user and await their typed approval (approved/lgtm/verified). Do not dispatch Guardian without it — there is no inference-based auto-approval.' \
             | jq -Rs .)
         cat <<EOF
 {
@@ -837,7 +837,14 @@ mkdir -p "$TRACE_STORE" 2>/dev/null || true
 _AV_WF=$(workflow_id 2>/dev/null || echo "main")
 marker_create "autoverify" "$_AV_SESSION" "$_AV_WF" "$$" "" "active" 2>/dev/null || true
 
-write_proof_status "verified" "$PROJECT_ROOT"
+# @decision DEC-HUMAN-TOKEN-004
+# @title post-task.sh no longer auto-promotes proof or dispatches Guardian
+# @status accepted
+# @rationale post-task.sh runs after the tester with no human in the loop;
+#   auto-promotion + AUTO-VERIFY-APPROVED dispatch was a string-driven path to
+#   "verified" that bypassed human approval. It now emits an advisory and presents
+#   evidence; promotion happens only via the human-token gate.
+log_info "POST-TASK" "tester reported AUTOVERIFY: CLEAN and secondary validation passed — would previously auto-promote, but promotion now requires human approval (DEC-HUMAN-TOKEN-001). Proof NOT written; awaiting typed user approval."
 
 # W6-1: Emit governor.assessment event into SQLite event ledger.
 # Governor is parked (DEC-PERF-006) but events are retained for future restoration.
@@ -853,11 +860,11 @@ else
     append_audit "$PROJECT_ROOT" "auto_verify" "post-task: AUTOVERIFY: CLEAN — secondary validation passed, proof auto-verified"
 fi
 
-log_info "POST-TASK" "AUTO-VERIFIED — proof written to $PROOF_FILE"
+log_info "POST-TASK" "tester clean — presenting evidence to user, awaiting typed approval (no auto-promotion)"
 
 # Emit directive with embedded evidence (DEC-EVGATE-004)
-CONTEXT="post-task: tester Task completed — proof auto-verified (AUTOVERIFY: CLEAN, secondary validation passed)."
-DIRECTIVE="AUTO-VERIFIED: .proof-status is verified. Dispatch Guardian NOW with 'AUTO-VERIFY-APPROVED' in the prompt."
+CONTEXT="post-task: tester Task completed with a clean, high-confidence assessment (AUTOVERIFY: CLEAN, secondary validation passed)."
+DIRECTIVE="Tester run complete and clean. Present the verification report below to the user and await their typed approval (approved/lgtm/verified). Do not dispatch Guardian without it — proof reaches 'verified' only via human approval."
 
 # Read real verification evidence from trace artifacts
 _EV_CONTENT=""

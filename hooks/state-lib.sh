@@ -917,6 +917,42 @@ proof_state_set() {
     local new_ord
     new_ord=$(_proof_ordinal "$new_status")
 
+    # @decision DEC-HUMAN-TOKEN-001
+    # @title verified transition requires single-use human-approval token
+    # @status accepted
+    # @rationale The lattice check below authenticates the CHANNEL (a forward
+    #   progression on the proof-state lattice, or an epoch-bumped regression) but
+    #   nothing authenticates the TRIGGER — any code path that reaches this writer
+    #   with new_status="verified" gets promoted, including a tester-emitted string
+    #   relayed through cas_proof_status(). This gate moves provenance enforcement
+    #   to the sole writer: "verified" is refused unless a single-use, short-TTL
+    #   token minted ONLY by prompt-submit.sh's typed human-approval branch is
+    #   present and unexpired. Keying on emptiness fails closed — a missing or
+    #   cleared token denies promotion. Consuming (clearing) the token before the
+    #   write makes it single-use, so a second caller in the same workflow is
+    #   denied. This closes all string-relay promotion paths, including unknown or
+    #   future ones, without touching any non-verified transition.
+    if [[ "$new_status" == "verified" ]]; then
+        local _tok _tok_nonce _tok_mint_ts _now
+        _tok=$(state_read "proof.human_token")
+        if [[ -z "$_tok" ]]; then
+            log_info "proof_state_set" "verified DENIED: no human approval token present"
+            return 1
+        fi
+        _tok_nonce="${_tok%%|*}"
+        _tok_mint_ts="${_tok##*|}"
+        _now=$(date +%s)
+        if [[ ! "$_tok_mint_ts" =~ ^[0-9]+$ ]] || (( _now - _tok_mint_ts > 10 )); then
+            log_info "proof_state_set" "verified DENIED: token expired/malformed"
+            return 1
+        fi
+        # Consume — single use. Delete the key so state_read returns "", causing
+        # the emptiness check above to deny any second caller in the same workflow.
+        # state_update rejects empty-string values (${2:?} guard), so state_delete
+        # is the correct mechanism here.
+        state_delete "proof.human_token" 2>/dev/null || true
+    fi
+
     local wf_id_e new_status_e source_e session_id_e
     wf_id_e=$(_sql_escape "$wf_id")
     new_status_e=$(_sql_escape "$new_status")
