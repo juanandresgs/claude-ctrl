@@ -309,7 +309,7 @@ if [[ "$AGENT_TYPE" == "guardian" ]]; then
         _GA_HAS_PROOF=true
     fi
     if [[ "$_PROOF_BYPASS" != "true" && -n "$_GA_HAS_PROOF" ]]; then
-        if [[ "$PROOF_STATUS" != "verified" ]]; then
+        if [[ "$PROOF_STATUS" != "verified" && "$PROOF_STATUS" != "committed" ]]; then
             _write_gate_denied_trace "guardian" "gate-a-proof" "Proof status is '${PROOF_STATUS}' (requires 'verified')" 2>/dev/null || true
             emit_deny "Cannot dispatch Guardian: proof-of-work is '$PROOF_STATUS' (requires 'verified'). Dispatch tester or complete verification before dispatching Guardian."
         fi

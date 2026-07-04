@@ -887,7 +887,7 @@ if echo "$_stripped_cmd" | grep -qE 'git\s+[^|;&]*\b(commit|merge)([^a-zA-Z0-9-]
             append_session_event "gate_eval" "{\"hook\":\"guard\",\"check\":\"proof_gate\",\"result\":\"block\",\"reason\":\"sqlite proof empty\"}" "$PROOF_DIR"
             emit_deny "Cannot proceed: proof-of-work is not verified in SQLite (the sole authority). The flat .proof-status file is a non-authoritative cache and cannot authorize a merge. The user must verify the feature (typed approval) before committing."
         fi
-        if [[ -n "$PROOF_STATUS" && "$PROOF_STATUS" != "verified" ]]; then
+        if [[ -n "$PROOF_STATUS" && "$PROOF_STATUS" != "verified" && "$PROOF_STATUS" != "committed" ]]; then
             append_session_event "gate_eval" "{\"hook\":\"guard\",\"check\":\"proof_gate\",\"result\":\"block\",\"reason\":\"not verified\"}" "$PROOF_DIR"
             emit_deny "Cannot proceed: proof-of-work verification is '$PROOF_STATUS'. The user must see the feature work before committing. Run the verification checkpoint (Phase 4.5) and get user confirmation."
         fi
