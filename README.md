@@ -1,3 +1,12 @@
+> [!CAUTION]
+> ## Deprecated and unmaintained
+>
+> This repository has been retired and is retained only as a historical
+> reference. **Do not install it or rely on it for active workflows.**
+>
+> It receives no maintenance, security updates, compatibility fixes, or
+> support. There is currently no supported public successor.
+
 <p align="center">
   <img src="assets/banner.jpeg" alt="The Systems Thinker's Deterministic Claude Code Control Plane" width="100%">
 </p>
@@ -63,7 +72,10 @@ I've never been much of a gambler myself.
 
 ---
 
-## Install
+## Historical installation instructions (do not use)
+
+The commands below are preserved only to document how the retired project used
+to be installed. Do not run them on an active Claude Code configuration.
 
 ClauDEX is intended to live at `~/.claude`:
 
